@@ -1,0 +1,50 @@
+schema_version: 2
+requirements:
+  - id: INPUT-001
+    title: Reject stale RC input
+    statement: >-
+      Command Input shall treat RC frames older than the link's limit as
+      invalid and signal loss of link to the safety master.
+    rationale: Stale input must never be acted on as a live command.
+    derived_from: [R2]
+    verification:
+      entries:
+        - level: unit
+          environment: host
+          method:
+            test: alpha::input::tests::rejects_stale
+        - level: system
+          environment: product
+          hazard: equipment
+          preconditions:
+            propellers: removed
+          method:
+            procedure: project_meta/testing/procedures.md#Bench Gate
+
+  - id: INPUT-002
+    title: Decode frames
+    statement: Command Input shall decode every valid frame.
+    rationale: A child of the input path.
+    derived_from: [INPUT-003]
+    verification:
+      entries:
+        - level: unit
+          environment: host
+          method:
+            test: alpha::input::tests::rejects_stale
+
+  - id: INPUT-003
+    title: Input path
+    statement: The input path shall deliver valid commands.
+    rationale: A parent with no method of its own.
+    derived_from: [R1, R7]
+    verification:
+      entries: []
+
+  - id: INPUT-004
+    title: Timing of the input path
+    statement: Every input task shall finish within its budget.
+    rationale: Nothing verifies it yet.
+    derived_from: [INPUT-003]
+    verification:
+      entries: []
