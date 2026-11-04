@@ -100,6 +100,7 @@ fn build(
         trace: &project.trace,
         configurations: &cargo,
         libraries: &NoLibraries,
+        reviews: &project.reviews,
     };
     evidence::build(&current, request, now)
 }
@@ -122,6 +123,7 @@ fn recorded(repository: &Path) -> (Project, Recorded) {
         trace: &project.trace,
         configurations: &cargo,
         libraries: &NoLibraries,
+        reviews: &project.reviews,
     };
     let recorded = Recorded::new(&current, &records, None).unwrap();
     (project, recorded)

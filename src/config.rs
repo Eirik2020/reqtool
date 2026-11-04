@@ -44,6 +44,13 @@ pub struct Config {
     /// a set does not compile is simply not in that run.
     #[serde(default = "default_test_features")]
     pub test_features: Vec<Vec<String>>,
+    /// The directory holding reviewed diff analyses of dependency bumps; by
+    /// default `reviews` in `requirements`.
+    pub reviews: Option<String>,
+    /// Who may review a diff analysis. Anyone may write one; with no
+    /// maintainers, no review holds.
+    #[serde(default)]
+    pub maintainers: Vec<String>,
 }
 
 fn default_artifacts() -> String {
@@ -70,6 +77,12 @@ impl Config {
             .clone()
             .unwrap_or_else(|| format!("{}/gates.yaml", self.requirements))
     }
+
+    pub fn reviews(&self) -> String {
+        self.reviews
+            .clone()
+            .unwrap_or_else(|| format!("{}/reviews", self.requirements))
+    }
 }
 
 #[cfg(test)]
@@ -92,6 +105,8 @@ mod tests {
         assert_eq!(config.test_features, [Vec::<String>::new()]);
         assert!(!config.every_file_traced);
         assert_eq!(config.boards, None);
+        assert_eq!(config.reviews(), "req/reviews");
+        assert!(config.maintainers.is_empty());
     }
 
     #[test]

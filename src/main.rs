@@ -150,6 +150,7 @@ fn main() -> ExitCode {
         trace: &project.trace,
         configurations: &configurations,
         libraries: &libraries,
+        reviews: &project.reviews,
     };
     if let Command::Gate { name, board } = &cli.command {
         return gate(&current, name.as_deref(), board.as_deref());

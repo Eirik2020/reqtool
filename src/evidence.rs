@@ -15,6 +15,10 @@
 //! configuration's identity is the one recorded and the files declaring its
 //! requirement are unchanged. The compiler is not part of any of this. Records of
 //! other schemas are left beside these untouched, and not read.
+//!
+//! A reviewed diff analysis ([`crate::review`]) lets a result recorded with an
+//! external crate at one version count as if it were at another. It bridges
+//! that version and nothing else, and an entry that stands on one says so.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -30,6 +34,7 @@ use crate::identity;
 use crate::items::Resolver;
 use crate::library::Libraries;
 use crate::project::Project;
+use crate::review::{self, Bridges, Reviews};
 use crate::schema::{Entry, Environment, Hazard, Level, Method, Requirement};
 use crate::status::{Evidence, Status};
 use crate::trace::{Import, Trace};
@@ -244,6 +249,8 @@ pub struct Current<'a> {
     pub trace: &'a Trace,
     pub configurations: &'a dyn Configurations,
     pub libraries: &'a dyn Libraries,
+    /// The reviewed diff analyses that hold, normally the project's own.
+    pub reviews: &'a Reviews,
 }
 
 impl Current<'_> {
@@ -298,9 +305,18 @@ impl Current<'_> {
     }
 
     /// Whether `module`, exercised by this result, is unchanged since: its
-    /// identity and the versions of the external crates it imports.
+    /// identity and the versions of the external crates it imports, each the
+    /// same or, with `reviews`, carried forward by a chain of them. The steps
+    /// it stood on, or `None` when it changed.
     /// Another local file is a part with its own evidence, so it is not here.
-    fn module_unchanged(&self, record: &Record, module: &str) -> bool {
+    fn module_unchanged(
+        &self,
+        record: &Record,
+        module: &str,
+        reviews: Option<&Reviews>,
+    ) -> Option<Bridges> {
+        let recorded = record.modules.get(module)?;
+        let now = self.trace.imports(module);
         let externals = |imports: &[String]| -> Vec<String> {
             imports
                 .iter()
@@ -308,18 +324,68 @@ impl Current<'_> {
                 .cloned()
                 .collect()
         };
-        let now = externals(&self.trace.imports(module));
-        record
-            .modules
-            .get(module)
-            .is_some_and(|recorded| externals(recorded) == now)
-            && std::iter::once(module)
-                .chain(now.iter().map(String::as_str))
-                .all(|key| {
-                    record.identities.contains_key(key)
-                        && record.identities.get(key).cloned() == self.trace.identity(key)
+        let (recorded, now) = (externals(recorded), externals(&now));
+        let as_recorded = std::iter::once(module)
+            .chain(recorded.iter().map(String::as_str))
+            .all(|key| {
+                record.identities.contains_key(key)
+                    && record.identities.get(key).cloned() == self.trace.identity(key)
+            });
+        if !as_recorded {
+            return None;
+        }
+        let versions = |keys: &[String]| -> Vec<(String, String)> {
+            keys.iter()
+                .map(|key| {
+                    let external = key.trim_start_matches("extern:");
+                    let (package, version) = external.rsplit_once('@').unwrap_or((external, ""));
+                    (package.to_owned(), version.to_owned())
                 })
+                .collect()
+        };
+        let (recorded, now) = (versions(&recorded), versions(&now));
+        review::pair(&borrowed(&recorded), &borrowed(&now), reviews)
     }
+}
+
+fn borrowed(pairs: &[(String, String)]) -> Vec<(&str, &str)> {
+    pairs
+        .iter()
+        .map(|(package, version)| (package.as_str(), version.as_str()))
+        .collect()
+}
+
+/// Whether a board run's configuration is the one now, as a car: the same
+/// identity, or, with `reviews`, the same once the external crate versions
+/// they carry forward are taken as moved. The steps it stood on, or `None`.
+fn same_configuration(
+    ran: &Configuration,
+    now: &Configuration,
+    reviews: Option<&Reviews>,
+) -> Option<Bridges> {
+    if ran.identity() == now.identity() {
+        return Some(Bridges::new());
+    }
+    let versions = |configuration: &Configuration| -> Vec<(String, String)> {
+        configuration
+            .externals
+            .iter()
+            .flat_map(|(package, versions)| {
+                versions
+                    .split(", ")
+                    .filter(|version| !version.is_empty())
+                    .map(move |version| (package.clone(), version.to_owned()))
+            })
+            .collect()
+    };
+    let bridges = review::pair(
+        &borrowed(&versions(ran)),
+        &borrowed(&versions(now)),
+        reviews,
+    )?;
+    let mut as_if = ran.clone();
+    as_if.externals.clone_from(&now.externals);
+    (as_if.identity() == now.identity()).then_some(bridges)
 }
 
 /// Statuses from the records and the current code.
@@ -336,11 +402,15 @@ impl Current<'_> {
 /// until gates name the boards they require. With a configuration in scope,
 /// only the modules it compiles in count, and only board evidence from that
 /// configuration whose declaring files are unchanged.
+///
+/// An entry stands on a review where its status, or a board's, is not the one
+/// the same evidence gives without reviews.
 pub struct Recorded {
     statuses: BTreeMap<(String, usize), Status>,
     boards: BTreeMap<(String, usize), Vec<(String, Status)>>,
     owed_files: BTreeMap<String, Vec<String>>,
     target_only_files: BTreeMap<String, Vec<String>>,
+    on_review: BTreeMap<(String, usize), Bridges>,
 }
 
 impl Recorded {
@@ -349,11 +419,33 @@ impl Recorded {
         records: &[Record],
         scope: Option<&Configuration>,
     ) -> Result<Self, String> {
+        let mut judged = Self::judge(current, records, scope, Some(current.reviews))?;
+        if current.reviews.is_empty() {
+            judged.on_review.clear();
+            return Ok(judged);
+        }
+        let without = Self::judge(current, records, scope, None)?;
+        judged.on_review.retain(|key, _| {
+            judged.statuses.get(key) != without.statuses.get(key)
+                || judged.boards.get(key) != without.boards.get(key)
+        });
+        Ok(judged)
+    }
+
+    /// Statuses with these reviews, or none, and the steps each entry's
+    /// counting results stood on.
+    fn judge(
+        current: &Current<'_>,
+        records: &[Record],
+        scope: Option<&Configuration>,
+        reviews: Option<&Reviews>,
+    ) -> Result<Self, String> {
         let project = current.project;
         let mut statuses = BTreeMap::new();
         let mut boards = BTreeMap::new();
         let mut owed_files = BTreeMap::new();
         let mut target_only_files = BTreeMap::new();
+        let mut on_review: BTreeMap<(String, usize), Bridges> = BTreeMap::new();
         let host_files = current.configurations.host_files()?;
         for requirement in project.requirements.values() {
             let declaring: BTreeSet<&str> = current
@@ -391,22 +483,33 @@ impl Recorded {
                             .map(String::as_str)
                             .filter(|module| declaring.contains(module))
                             .collect();
+                        let mut stood_on = Bridges::new();
                         let unchanged: Vec<&str> = reached
                             .iter()
                             .copied()
-                            .filter(|module| current.module_unchanged(record, module))
+                            .filter(|module| {
+                                current
+                                    .module_unchanged(record, module, reviews)
+                                    .map(|bridges| stood_on.extend(bridges))
+                                    .is_some()
+                            })
                             .collect();
                         let counts = current_claim
                             && if reached.is_empty() {
                                 // A run that exercised nothing proves nothing.
                                 !result.exercised.is_empty()
-                                    && result
-                                        .exercised
-                                        .iter()
-                                        .all(|module| current.module_unchanged(record, module))
+                                    && result.exercised.iter().all(|module| {
+                                        current
+                                            .module_unchanged(record, module, reviews)
+                                            .map(|bridges| stood_on.extend(bridges))
+                                            .is_some()
+                                    })
                             } else {
                                 !unchanged.is_empty()
                             };
+                        if counts && !stood_on.is_empty() {
+                            on_review.entry(key.clone()).or_default().extend(stood_on);
+                        }
                         if result.result == Outcome::Pass {
                             ever_exercised.extend(reached.iter().copied());
                             if current_claim {
@@ -442,8 +545,20 @@ impl Recorded {
                                             .configurations
                                             .configuration(board, &ran.features)?,
                                     };
-                                    ran.identity() == now.identity()
-                                        && covered_unchanged(ran, &now, &all_declaring)
+                                    match same_configuration(ran, &now, reviews) {
+                                        Some(bridges)
+                                            if covered_unchanged(ran, &now, &all_declaring) =>
+                                        {
+                                            if !bridges.is_empty() {
+                                                on_review
+                                                    .entry(key.clone())
+                                                    .or_default()
+                                                    .extend(bridges);
+                                            }
+                                            true
+                                        }
+                                        _ => false,
+                                    }
                                 }
                             };
                         judged.push((counts, result.result));
@@ -497,6 +612,7 @@ impl Recorded {
             boards,
             owed_files,
             target_only_files,
+            on_review,
         })
     }
 }
@@ -544,6 +660,13 @@ impl Evidence for Recorded {
         self.target_only_files
             .get(&requirement.id)
             .cloned()
+            .unwrap_or_default()
+    }
+
+    fn reviews(&self, requirement: &Requirement, entry: usize) -> Vec<String> {
+        self.on_review
+            .get(&(requirement.id.clone(), entry))
+            .map(|bridges| bridges.iter().cloned().collect())
             .unwrap_or_default()
     }
 }
