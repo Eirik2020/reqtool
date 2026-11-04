@@ -43,10 +43,25 @@ boards = "firmware"                         # one firmware crate per board
 retired = ["archive"]                       # no active procedure may point in here
 critical_metadata = "reqtool"               # [package.metadata.<this>] critical = true
 every_file_traced = false                   # every file owes tracing, with no marker
+every_file_traced_except = ["benches"]      # path prefixes it leaves out
 test_features = [["chip-a"], ["chip-b"]]    # host tests, per feature set
 reviews = "requirements/reviews"            # the default, beside requirements
 maintainers = ["a-maintainer"]              # who may review a diff analysis
 ```
+
+`every_file_traced` makes every source file safety-critical, for a project with
+no per-file notion of it. `every_file_traced_except` leaves paths out of that,
+such as bench or tool crates beside a library. Each entry is a path prefix
+relative to the repository, matched by whole components against a file's path
+with `.` and `..` resolved, so a file reached through `#[path]` is matched where
+it sits. A file left out is safety-critical only if its module doc says so, and
+then every rule applies to it. Leaving a file out changes only whether the
+tracing rules and `report` count it as safety-critical, never what evidence
+covers or any status.
+`validate` refuses an entry that is absolute, climbs out with `..`, is a
+pattern, repeats or adds nothing to an earlier one, or leaves out no source
+file, and the list without `every_file_traced`; while one is refused no command
+runs. `validate` and `check` state what each entry leaves out.
 
 ## Commands
 
