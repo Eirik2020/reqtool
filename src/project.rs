@@ -120,9 +120,12 @@ impl Project {
             }
         };
         let mut trace = Trace::build(repository, &workspace)?;
+        problems.extend(left_out_problems(&config, &trace));
         if config.every_file_traced {
-            for file in trace.files.values_mut() {
-                file.critical = true;
+            for (path, file) in &mut trace.files {
+                if config.left_out_by(path).is_none() {
+                    file.critical = true;
+                }
             }
         }
         problems.extend(trace.problems.iter().map(|message| Problem {
@@ -208,6 +211,28 @@ impl Project {
             }
         }
         problems
+    }
+
+    /// What `every_file_traced_except` leaves out: each entry, with the files
+    /// it covers. Empty unless `every_file_traced` is on.
+    pub fn left_out(&self) -> Vec<(&str, Vec<&str>)> {
+        if !self.config.every_file_traced {
+            return Vec::new();
+        }
+        self.config
+            .every_file_traced_except
+            .iter()
+            .map(|prefix| {
+                let files = self
+                    .trace
+                    .files
+                    .keys()
+                    .filter(|path| self.config.left_out_by(path) == Some(prefix.as_str()))
+                    .map(String::as_str)
+                    .collect();
+                (prefix.as_str(), files)
+            })
+            .collect()
     }
 
     fn location(&self, id: &str) -> String {
@@ -314,6 +339,39 @@ impl Project {
         }
         found
     }
+}
+
+/// `every_file_traced_except` checked on its own and against the source files:
+/// an entry that leaves out no file any module tree reaches says nothing, and
+/// is refused like one that is malformed.
+fn left_out_problems(config: &Config, trace: &Trace) -> Vec<Problem> {
+    let mut messages = config.except_problems();
+    if messages.is_empty() && config.every_file_traced {
+        for prefix in &config.every_file_traced_except {
+            let covered = |path: &&String| crate::config::leaves_out(prefix, path);
+            if !trace.files.keys().any(|path| covered(&path)) {
+                messages.push(format!(
+                    "every_file_traced_except: {prefix:?} leaves out no source file"
+                ));
+            } else if !trace
+                .files
+                .keys()
+                .filter(covered)
+                .any(|path| config.left_out_by(path) == Some(prefix.as_str()))
+            {
+                messages.push(format!(
+                    "every_file_traced_except: {prefix:?} leaves out only what an earlier entry does"
+                ));
+            }
+        }
+    }
+    messages
+        .into_iter()
+        .map(|message| Problem {
+            location: crate::config::FILE.to_owned(),
+            message,
+        })
+        .collect()
 }
 
 fn entry_problems(
