@@ -3,11 +3,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::rc::Rc;
 
 use reqtool::config::Config;
-use reqtool::configuration::{Configuration, Configurations};
+use reqtool::configuration::{Cargo, Configuration, Configurations};
 use reqtool::evidence::{self, Current, Outcome, Recorded, RunRequest, Timestamp};
 use reqtool::library::NoLibraries;
 use reqtool::project::Project;
@@ -577,4 +577,232 @@ fn a_review_bridges_a_real_step_and_is_written_once() {
     review(path, &request("dep", "1.0.0", "1.0.1")).unwrap();
     let again = review(path, &request("dep", "1.0.0", "1.0.1")).unwrap_err();
     assert!(again.contains("exists already"), "{again}");
+}
+
+fn tool(directory: &Path, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_reqtool"))
+        .args(args)
+        .current_dir(directory)
+        .output()
+        .unwrap()
+}
+
+fn text(output: &Output) -> String {
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+fn cargo(directory: &Path, args: &[&str]) {
+    let output = Command::new("cargo")
+        .args(args)
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .env_remove("RUSTC")
+        .env_remove("CARGO")
+        .current_dir(directory)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "cargo {args:?}: {}", text(&output));
+}
+
+/// A library in its own git repository, and a project pinning it by `rev`,
+/// with a host test and a board that compiles it in. The library's revision
+/// moves; one review restores the evidence on both sides.
+#[test]
+fn a_git_revision_bump_end_to_end() {
+    let root = tempfile::tempdir().unwrap();
+    let library = root.path().join("my-hal");
+    write(
+        &library.join("Cargo.toml"),
+        "[package]\nname = \"my-hal\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n",
+    );
+    write(
+        &library.join("src/lib.rs"),
+        "pub fn answer() -> u32 {\n    42\n}\n",
+    );
+    git(&library, &["init", "-q"]);
+    git(&library, &["add", "-A"]);
+    git(&library, &["commit", "-qm", "first"]);
+    let first = git(&library, &["rev-parse", "HEAD"]);
+    write(
+        &library.join("src/lib.rs"),
+        "/// The answer.\npub fn answer() -> u32 {\n    42\n}\n\npub fn unused() {}\n",
+    );
+    git(&library, &["commit", "-qam", "second"]);
+    let second = git(&library, &["rev-parse", "HEAD"]);
+
+    let app = root.path().join("app");
+    let url = format!("file://{}", library.display());
+    write(
+        &app.join("reqtool.toml"),
+        &settings("app", r#"maintainers = ["maintainer"]"#),
+    );
+    write(&app.join("goals.md"), "1. **G1 - Goal.** A goal.\n");
+    write(
+        &app.join("Cargo.toml"),
+        &format!(
+            "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+             [package.metadata.reqtool]\ncritical = true\n\n\
+             [dependencies]\nmy-hal = {{ git = \"{url}\", rev = \"{first}\" }}\n\n[workspace]\n"
+        ),
+    );
+    write(
+        &app.join("src/lib.rs"),
+        "//! Requirements: APP-001
+//! Safety-critical.
+
+use my_hal::answer;
+
+pub fn twice() -> u32 {
+    answer() * 2
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn doubles() {
+        assert_eq!(super::twice(), 84);
+    }
+}
+",
+    );
+    write(
+        &app.join("firmware/demo/Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
+         [dependencies]\napp = { path = \"../..\" }\n\n[workspace]\n",
+    );
+    write(
+        &app.join("firmware/demo/src/main.rs"),
+        "fn main() {\n    let _ = app::twice();\n}\n",
+    );
+    write(&app.join("procedures.md"), "# Bench\n\nRun it.\n");
+    write(
+        &app.join("requirements/app.yaml"),
+        &requirement("APP-001", "app::tests::doubles"),
+    );
+    write(&app.join(".gitignore"), "target\n");
+    cargo(&app, &["generate-lockfile"]);
+    cargo(&app.join("firmware/demo"), &["generate-lockfile"]);
+    git(&app, &["init", "-q"]);
+    git(&app, &["add", "-A"]);
+    git(&app, &["commit", "-qm", "first"]);
+
+    // Host evidence through the tool, board evidence as a bench run records it.
+    let ran = tool(&app, &["test"]);
+    assert!(ran.status.success(), "{}", text(&ran));
+    {
+        let project = load(&app);
+        let built = Cargo::new(&project.repository, &project.workspace);
+        let current = Current {
+            project: &project,
+            trace: &project.trace,
+            configurations: &built,
+            libraries: &NoLibraries,
+            reviews: &project.reviews,
+        };
+        let now = Timestamp::from_unix(1_792_195_200);
+        let record = evidence::build(
+            &current,
+            &RunRequest {
+                runs: vec![(Method::Procedure(BENCH.into()), Outcome::Pass)],
+                board: Some("demo"),
+                features: &[],
+                failed: &[],
+                note: None,
+                supersedes: &[],
+                ruling: None,
+                details: Some(bench_details()),
+            },
+            now,
+        )
+        .unwrap();
+        // Both sides name the pin in one form.
+        let version = format!("0.1.0+{first}");
+        assert_eq!(
+            record.configuration.as_ref().unwrap().externals["my-hal"],
+            version
+        );
+        assert!(
+            load(&app)
+                .trace
+                .imports("src/lib.rs")
+                .contains(&format!("extern:my-hal@{version}"))
+        );
+        evidence::write(&app, &record, &now).unwrap();
+    }
+    let check = |expected: &str| {
+        let output = tool(&app, &["check", "APP-001"]);
+        assert!(output.status.success(), "{}", text(&output));
+        let shown = text(&output);
+        assert!(shown.contains(expected), "{shown}");
+        shown
+    };
+    let shown = check("APP-001  verified");
+    assert!(shown.contains("demo: verified"), "{shown}");
+
+    // The pin moves.
+    edit(&app.join("Cargo.toml"), &first, &second);
+    cargo(&app, &["update", "-p", "my-hal"]);
+    cargo(&app.join("firmware/demo"), &["update", "-p", "my-hal"]);
+    let shown = check("APP-001  stale");
+    assert!(shown.contains("demo: stale"), "{shown}");
+    assert!(!shown.contains("verified"), "{shown}");
+
+    write(
+        &app.join("analysis/my-hal.md"),
+        "# my-hal\n\nA doc comment and an unused function.\n",
+    );
+    let from = format!("0.1.0+{first}");
+    let to = format!("0.1.0+{second}");
+    let args = [
+        "review",
+        "--crate",
+        "my-hal",
+        "--from",
+        &from,
+        "--to",
+        &to,
+        "--analysis",
+        "analysis/my-hal.md",
+        "--analysed-by",
+        "contributor",
+        "--reviewed-by",
+        "maintainer",
+    ];
+    let reviewed = tool(&app, &args);
+    assert!(reviewed.status.success(), "{}", text(&reviewed));
+    let said = text(&reviewed);
+    assert!(
+        said.contains("restores 1 requirement(s):")
+            && said.lines().any(|line| {
+                line.split_whitespace().collect::<Vec<_>>()
+                    == ["APP-001", "stale", "->", "verified"]
+            }),
+        "{said}"
+    );
+    let shown = check("APP-001  verified");
+    assert!(shown.contains("demo: verified"), "{shown}");
+    assert_eq!(
+        shown
+            .matches(&format!("stands on a review: my-hal {from} to {to}"))
+            .count(),
+        2,
+        "{shown}"
+    );
+
+    let again = tool(&app, &args);
+    assert!(!again.status.success());
+    assert!(text(&again).contains("exists already"), "{}", text(&again));
+    let valid = tool(&app, &["validate"]);
+    assert!(valid.status.success(), "{}", text(&valid));
+    write(&app.join("analysis/my-hal.md"), "# my-hal\n\nRewritten.\n");
+    let changed = tool(&app, &["validate"]);
+    assert!(!changed.status.success());
+    assert!(
+        text(&changed).contains("has changed since it was reviewed"),
+        "{}",
+        text(&changed)
+    );
 }

@@ -15,7 +15,7 @@ computed from it, never written.
   whitespace and comments. Evidence records the hash, and a mismatch flags it.
 - **Dependencies are pinned.** Bumping one flags the files importing it until a
   maintainer has reviewed a diff analysis, or they are reverified. Contributors may
-  do the analysis.
+  do the analysis ([Reviewed bumps](#reviewed-bumps)).
 - **The compiler is not part of evidence.** Differences between compiler versions
   are negligible outside safety assurance, which reqtool does not address.
 - **The hazard decides who runs a test.** An agent may run and record anything
@@ -44,6 +44,8 @@ retired = ["archive"]                       # no active procedure may point in h
 critical_metadata = "reqtool"               # [package.metadata.<this>] critical = true
 every_file_traced = false                   # every file owes tracing, with no marker
 test_features = [["chip-a"], ["chip-b"]]    # host tests, per feature set
+reviews = "requirements/reviews"            # the default, beside requirements
+maintainers = ["a-maintainer"]              # who may review a diff analysis
 ```
 
 ## Commands
@@ -57,6 +59,8 @@ cargo run --release -- check INPUT-001
 cargo run --release -- check my_crate::rc_receiver
 cargo run --release -- check crates/my-crate/src/rc_receiver.rs
 cargo run --release -- report --board my-board
+cargo run --release -- review --crate my-hal --from 0.1.0 --to 0.1.1 \
+    --analysis docs/my-hal-0.1.1.md --analysed-by a-contributor --reviewed-by a-maintainer
 ```
 
 - `validate` exits nonzero on any problem: schema, IDs, references, tests
@@ -69,6 +73,7 @@ cargo run --release -- report --board my-board
   that requirement and the files that declare it; with a root the
   requirements derived from it; with a file, by path or by module path, the
   requirements it declares. Agents run `check` on a file before changing it.
+  An entry whose status stands on a reviewed bump says so, naming each step.
 - `report --board <board> [--features a,b]` reports maturity for one
   configuration: every requirement the safety-critical files it
   compiles in declare, with its status there, and the safety-critical files
@@ -101,6 +106,11 @@ cargo run --release -- report --board my-board
 cargo run --release -- record --test my_crate::rc_receiver::tests::name --result pass
 cargo run --release -- record --procedure "procedures.md#Heading" --board my-board --result pass
 ```
+
+- `review` writes a maintainer's review of a diff analysis of one dependency
+  bump into the reviews directory, refusing what `validate` would refuse and
+  never overwriting a review. It prints the requirements whose status it
+  changes.
 
 ## Status
 
@@ -145,6 +155,36 @@ record per session, each result naming its own method. Schema 4 records
 ending `__retraced` were derived from schema 3 ones at their own revisions,
 and list what could not be derived.
 
+### Reviewed bumps
+
+A dependency bump flags evidence that recorded the old version. Rather than
+reverify, someone writes an analysis of what the bump changed, and a maintainer
+reviews it. A review names one crate and one step, `from` to `to`, and evidence
+recorded with that crate at `from` then counts as if it were at `to`, for host
+and board evidence alike.
+
+- It is directional and chains: `A` to `B` and `B` to `C` carry evidence at `A`
+  to `C`, never `C` to `A`.
+- It bridges only that crate's version. A changed file, a changed claim, another
+  crate moving, or any other difference in what evidence covered still stales
+  it. A file that names the pin, such as a board app's manifest, is a changed
+  file.
+- A recorded fail is carried forward like a pass, so a review never clears one.
+- A version is written as evidence records it: `0.1.0` for a registry crate,
+  and `<version>+<commit>` for a git dependency pinned by `rev`, the commit the
+  lock file holds. A pin that names an abbreviated commit is recorded on a
+  board with that abbreviation, so pin the full commit for one review to cover
+  both. Records from before both sides agreed hold `<version>+rev=<commit>`,
+  which compares as the same version.
+
+A review is one JSON file in the reviews directory: `schema_version`, `crate`,
+`from`, `to`, `analysis` (a repository path), `analysis_sha256`, `analysed_by`,
+`reviewed_by` and `reviewed_at_utc`. Anyone may write the analysis; only one of
+the project's `maintainers` may review it, so a project with none has no valid
+reviews. `validate` refuses a review whose reviewer is not a maintainer, whose
+analysis is missing or has changed since, or whose `from` and `to` are the same
+version, and while one is refused no command runs.
+
 ## A requirement
 
 ```yaml
@@ -187,7 +227,7 @@ revision's own requirements and evidence give, computed there. The crate needs a
 claimed. Building it to judge it uses `target/reqtool-libraries/`. An entry like
 this covers only the library's part: a requirement's other entries still stand on
 this project's own evidence. A pin's commit is part of what evidence records, so
-moving it flags the files importing the crate.
+moving it flags the files importing the crate until a review covers the move.
 
 A requirement is verified by its own entries only; a parent is never proved
 through its children. Unknown fields are refused, and there is no `status`
