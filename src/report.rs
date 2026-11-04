@@ -31,6 +31,7 @@ pub fn summary(project: &Project, evidence: &dyn Evidence) -> String {
         let _ = write!(out, "; {unmethoded} with no verification method yet");
     }
     out.push('\n');
+    out.push_str(&left_out(project));
     for requirement in project.requirements.values() {
         let gap = if has_no_method(requirement) {
             "  (no method)"
@@ -48,6 +49,28 @@ pub fn summary(project: &Project, evidence: &dyn Evidence) -> String {
             statuses[&requirement.id].name(),
             requirement.title
         );
+    }
+    out
+}
+
+/// One line per entry of `every_file_traced_except`: how many source files it
+/// leaves out, and how many of those their own marker keeps safety-critical.
+pub fn left_out(project: &Project) -> String {
+    let mut out = String::new();
+    for (prefix, files) in project.left_out() {
+        let marked = files
+            .iter()
+            .filter(|path| project.trace.files[**path].critical)
+            .count();
+        let _ = write!(
+            out,
+            "every_file_traced leaves out {prefix}: {} file(s)",
+            files.len()
+        );
+        if marked > 0 {
+            let _ = write!(out, ", {marked} kept safety-critical by their own marker");
+        }
+        out.push('\n');
     }
     out
 }
@@ -100,6 +123,19 @@ pub fn check(project: &Project, target: &str, evidence: &dyn Evidence) -> Result
             "not safety-critical"
         }
     );
+    if project.config.every_file_traced
+        && let Some(prefix) = project.config.left_out_by(&path)
+    {
+        let _ = writeln!(
+            out,
+            "  every_file_traced leaves it out ({prefix}){}",
+            if file.critical {
+                ", and its own marker keeps it safety-critical"
+            } else {
+                ""
+            }
+        );
+    }
     let files = file
         .imports
         .values()
