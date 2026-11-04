@@ -236,7 +236,9 @@ fn detail(
 
 /// Maturity for one configuration: every requirement declared by
 /// the safety-critical files it compiles in, with its status there, and the
-/// safety-critical files that declare nothing.
+/// safety-critical files that declare nothing. Requirements declared only by
+/// files it compiles in that `every_file_traced_except` leaves out are listed
+/// apart, so none drops out of sight.
 pub fn maturity(
     project: &Project,
     configuration: &Configuration,
@@ -285,6 +287,31 @@ pub fn maturity(
     for (id, files) in &declared {
         let status = statuses.get(*id).map_or("unknown", |status| status.name());
         let _ = writeln!(out, "{id:<16} {status:<10} {}", files.join(", "));
+    }
+    let mut apart: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (path, file) in &project.trace.files {
+        if file.critical
+            || project.left_out_by(path).is_none()
+            || !configuration.files.contains_key(path)
+        {
+            continue;
+        }
+        for id in &file.requirements {
+            if !declared.contains_key(id.as_str()) {
+                apart.entry(id.as_str()).or_default().push(path.as_str());
+            }
+        }
+    }
+    if !apart.is_empty() {
+        let _ = writeln!(
+            out,
+            "{} requirement(s) declared only by files every_file_traced leaves out:",
+            apart.len()
+        );
+        for (id, files) in &apart {
+            let status = statuses.get(*id).map_or("unknown", |status| status.name());
+            let _ = writeln!(out, "{id:<16} {status:<10} {}", files.join(", "));
+        }
     }
     if !silent.is_empty() {
         let _ = writeln!(

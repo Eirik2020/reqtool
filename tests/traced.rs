@@ -306,6 +306,41 @@ fn a_file_is_placed_where_it_really_is() {
 }
 
 #[test]
+fn a_report_lists_what_only_left_out_files_declare() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
+    repository(root, Some(r#"["hil"]"#));
+    write(
+        &root.join("requirements/bench.yaml"),
+        "schema_version: 2
+requirements:
+  - id: BENCH-001
+    title: The bench doubles
+    statement: The bench shall double the answer.
+    rationale: A bench needs one.
+    derived_from: [G1]
+    verification:
+      entries: []
+",
+    );
+    write(
+        &root.join("hil/bench-a/src/main.rs"),
+        &format!("//! Requirements: BENCH-001\n\n{BENCH}"),
+    );
+    let report = tool(root, &["report", "--board", "bench-a"]);
+    assert!(report.status.success(), "{}", text(&report));
+    let found = text(&report);
+    assert!(found.contains("1 requirements declared"), "{found}");
+    assert!(
+        found.contains(
+            "1 requirement(s) declared only by files every_file_traced leaves out:\n\
+             BENCH-001        unverified hil/bench-a/src/main.rs\n"
+        ),
+        "{found}"
+    );
+}
+
+#[test]
 fn a_file_marked_safety_critical_keeps_its_marker() {
     let root = tempfile::tempdir().unwrap();
     let root = root.path();
