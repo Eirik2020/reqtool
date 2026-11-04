@@ -215,6 +215,10 @@ fn assign(
 /// Every review in the project's reviews directory: those that hold, and a
 /// problem for each that does not.
 pub fn load(repository: &Path, config: &Config) -> (Reviews, Vec<Problem>) {
+    if let Err(message) = check_directory(repository, config) {
+        let location = crate::config::FILE.to_owned();
+        return (Reviews::default(), vec![Problem { location, message }]);
+    }
     let directory = config.reviews();
     let mut files = Vec::new();
     collect_json(&repository.join(&directory), &mut files);
@@ -271,6 +275,12 @@ pub fn check(repository: &Path, config: &Config, review: &Review) -> Vec<String>
             problems.push(format!("{field} is empty"));
         }
     }
+    if !is_utc_timestamp(&review.reviewed_at_utc) {
+        problems.push(format!(
+            "reviewed_at_utc {:?} is not a UTC time as YYYY-MM-DDTHH:MM:SSZ",
+            review.reviewed_at_utc
+        ));
+    }
     if same_form(&review.from) == same_form(&review.to) {
         problems.push("from and to are the same version, so it bridges nothing".into());
     }
@@ -293,21 +303,105 @@ pub fn check(repository: &Path, config: &Config, review: &Review) -> Vec<String>
     problems
 }
 
-/// The SHA-256 of an analysis, which must be a file inside the repository.
-pub fn analysis_sha256(repository: &Path, analysis: &str) -> Result<String, String> {
-    let path = Path::new(analysis);
-    if analysis.is_empty()
-        || !path
+/// Whether a path is written relative to the repository and stays in it:
+/// no root, no `..`.
+fn relative_inside(path: &str) -> bool {
+    !path.is_empty()
+        && Path::new(path)
             .components()
             .all(|part| matches!(part, Component::Normal(_) | Component::CurDir))
-    {
+}
+
+/// Whether `path`, once links are resolved, is under the repository's root.
+fn resolves_inside(repository: &Path, path: &Path) -> Result<bool, String> {
+    let root = repository
+        .canonicalize()
+        .map_err(|error| format!("{}: {error}", repository.display()))?;
+    Ok(path
+        .canonicalize()
+        .is_ok_and(|resolved| resolved.starts_with(&root)))
+}
+
+/// The SHA-256 of an analysis, which must be a regular file inside the
+/// repository once links are resolved: never a directory, a pipe or a device,
+/// which could not be hashed or would never finish reading.
+pub fn analysis_sha256(repository: &Path, analysis: &str) -> Result<String, String> {
+    if !relative_inside(analysis) {
         return Err(format!(
             "analysis {analysis:?} is not a repository-relative path"
         ));
     }
-    let bytes = std::fs::read(repository.join(path))
-        .map_err(|error| format!("analysis {analysis}: {error}"))?;
+    let path = repository.join(analysis);
+    let metadata =
+        std::fs::metadata(&path).map_err(|error| format!("analysis {analysis}: {error}"))?;
+    if !resolves_inside(repository, &path)? {
+        return Err(format!(
+            "analysis {analysis} resolves to a file outside the repository"
+        ));
+    }
+    if !metadata.is_file() {
+        return Err(format!("analysis {analysis} is not a regular file"));
+    }
+    let bytes = std::fs::read(&path).map_err(|error| format!("analysis {analysis}: {error}"))?;
     Ok(identity::sha256(&bytes))
+}
+
+/// The reviews setting: a directory inside the repository, apart from the
+/// evidence directory, so neither holds the other's files.
+pub fn check_directory(repository: &Path, config: &Config) -> Result<(), String> {
+    let reviews = config.reviews();
+    if !relative_inside(&reviews) {
+        return Err(format!(
+            "reviews {reviews:?} is not a repository-relative directory"
+        ));
+    }
+    let parts = |path: &str| -> Vec<String> {
+        Path::new(path)
+            .components()
+            .filter(|part| matches!(part, Component::Normal(_)))
+            .map(|part| part.as_os_str().to_string_lossy().into_owned())
+            .collect()
+    };
+    let (own, evidence) = (parts(&reviews), parts(&config.evidence));
+    if own.starts_with(&evidence) || evidence.starts_with(&own) {
+        return Err(format!(
+            "reviews {reviews:?} overlaps the evidence directory {:?}",
+            config.evidence
+        ));
+    }
+    let directory = repository.join(&reviews);
+    if directory.exists() && !resolves_inside(repository, &directory)? {
+        return Err(format!(
+            "reviews {reviews:?} resolves to a directory outside the repository"
+        ));
+    }
+    Ok(())
+}
+
+/// `YYYY-MM-DDTHH:MM:SSZ`, as `reqtool review` writes it, each field in range.
+fn is_utc_timestamp(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let field = |range: std::ops::Range<usize>| -> Option<u32> {
+        let digits = text.get(range)?;
+        if digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            digits.parse().ok()
+        } else {
+            None
+        }
+    };
+    bytes.len() == 20
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[10] == b'T'
+        && bytes[13] == b':'
+        && bytes[16] == b':'
+        && bytes[19] == b'Z'
+        && field(0..4).is_some()
+        && field(5..7).is_some_and(|month| (1..=12).contains(&month))
+        && field(8..10).is_some_and(|day| (1..=31).contains(&day))
+        && field(11..13).is_some_and(|hour| hour < 24)
+        && field(14..16).is_some_and(|minute| minute < 60)
+        && field(17..19).is_some_and(|second| second < 60)
 }
 
 /// What a new review says, before it is written.
@@ -348,6 +442,7 @@ pub fn create(
 
 /// Writes a review into the reviews directory, never over an existing file.
 pub fn write(repository: &Path, config: &Config, review: &Review) -> Result<PathBuf, String> {
+    check_directory(repository, config)?;
     let directory = repository.join(config.reviews());
     std::fs::create_dir_all(&directory).map_err(|e| format!("{}: {e}", directory.display()))?;
     let path = directory.join(review.file_name());
@@ -463,6 +558,24 @@ mod tests {
             None,
             "without reviews only the same version pairs"
         );
+    }
+
+    #[test]
+    fn a_review_time_is_utc_as_written() {
+        assert!(is_utc_timestamp(&Timestamp::from_unix(1_800_000_000).iso()));
+        for bad in [
+            "",
+            "2026-11-04",
+            "2026-11-04T22:48:52",
+            "2026-11-04T22:48:52+01:00",
+            "2026-13-04T22:48:52Z",
+            "2026-11-04T24:00:00Z",
+            "2026-11-04 22:48:52Z",
+            "2026-11-0aT22:48:52Z",
+            "2026-11-04T22:48:5é",
+        ] {
+            assert!(!is_utc_timestamp(bad), "{bad}");
+        }
     }
 
     #[test]

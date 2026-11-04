@@ -179,11 +179,14 @@ and board evidence alike.
 
 A review is one JSON file in the reviews directory: `schema_version`, `crate`,
 `from`, `to`, `analysis` (a repository path), `analysis_sha256`, `analysed_by`,
-`reviewed_by` and `reviewed_at_utc`. Anyone may write the analysis; only one of
-the project's `maintainers` may review it, so a project with none has no valid
-reviews. `validate` refuses a review whose reviewer is not a maintainer, whose
-analysis is missing or has changed since, or whose `from` and `to` are the same
-version, and while one is refused no command runs.
+`reviewed_by` and `reviewed_at_utc` (`YYYY-MM-DDTHH:MM:SSZ`). Anyone may write
+the analysis; only one of the project's `maintainers` may review it, so a project
+with none has no valid reviews. `validate` refuses a review whose reviewer is not
+a maintainer, whose analysis is missing, has changed since, or is not a regular
+file inside the repository once links are resolved, whose time is not UTC in that
+form, or whose `from` and `to` are the same version; and while one is refused no
+command runs. The reviews directory must be inside the repository and apart from
+the evidence directory.
 
 ## A requirement
 

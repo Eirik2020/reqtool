@@ -581,6 +581,127 @@ fn a_missing_or_changed_analysis_is_refused() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn an_analysis_is_a_regular_file_inside_the_repository() {
+    let repo = project();
+    let path = repo.path();
+    let outside = tempfile::tempdir().unwrap();
+    write(&outside.path().join("analysis.md"), "# Elsewhere\n");
+    std::os::unix::fs::symlink(outside.path().join("analysis.md"), path.join("leaving.md"))
+        .unwrap();
+    std::os::unix::fs::symlink(path.join("analysis.md"), path.join("staying.md")).unwrap();
+    std::fs::create_dir(path.join("folder")).unwrap();
+    let fifo = Command::new("mkfifo")
+        .arg(path.join("pipe"))
+        .output()
+        .unwrap();
+    assert!(fifo.status.success(), "{fifo:?}");
+    for (analysis, expected) in [
+        ("leaving.md", "resolves to a file outside the repository"),
+        ("folder", "is not a regular file"),
+        ("pipe", "is not a regular file"),
+    ] {
+        let refused = review(
+            path,
+            &Request {
+                analysis,
+                ..request("dep", "1.0.0", "1.0.1")
+            },
+        )
+        .unwrap_err();
+        assert!(refused.contains(expected), "{analysis}: {refused}");
+    }
+    assert!(!path.join("requirements/reviews").exists());
+
+    // A link that stays inside is the file it names.
+    review(
+        path,
+        &Request {
+            analysis: "staying.md",
+            ..request("dep", "1.0.0", "1.0.1")
+        },
+    )
+    .unwrap();
+    assert_eq!(problems(path), "");
+
+    // A review already written is refused once its analysis leaves.
+    std::fs::remove_file(path.join("staying.md")).unwrap();
+    std::os::unix::fs::symlink(outside.path().join("analysis.md"), path.join("staying.md"))
+        .unwrap();
+    assert!(
+        problems(path).contains("resolves to a file outside the repository"),
+        "{}",
+        problems(path)
+    );
+}
+
+#[test]
+fn a_review_says_when_it_was_reviewed_in_utc() {
+    let repo = project();
+    let path = repo.path();
+    let written = review(path, &request("dep", "1.0.0", "1.0.1")).unwrap();
+    let text = std::fs::read_to_string(&written).unwrap();
+    assert!(
+        text.contains("\"reviewed_at_utc\": \"2027-01-15T08:00:00Z\""),
+        "{text}"
+    );
+    edit(&written, "2027-01-15T08:00:00Z", "15 January 2027");
+    assert!(
+        problems(path).contains("is not a UTC time"),
+        "{}",
+        problems(path)
+    );
+}
+
+#[test]
+fn the_reviews_directory_is_inside_the_repository_apart_from_evidence() {
+    for (setting, expected) in [
+        ("/tmp/reviews", "not a repository-relative directory"),
+        ("../reviews", "not a repository-relative directory"),
+        ("evidence/reviews", "overlaps the evidence directory"),
+        ("evidence", "overlaps the evidence directory"),
+        (".", "overlaps the evidence directory"),
+    ] {
+        let repo = project();
+        let path = repo.path();
+        write(
+            &path.join("reqtool.toml"),
+            &settings(
+                "fixture",
+                &format!("maintainers = [\"maintainer\"]\nreviews = \"{setting}\""),
+            ),
+        );
+        assert!(
+            problems(path).contains(expected),
+            "{setting}: {}",
+            problems(path)
+        );
+        let refused = review(path, &request("dep", "1.0.0", "1.0.1")).unwrap_err();
+        assert!(refused.contains(expected), "{setting}: {refused}");
+    }
+
+    #[cfg(unix)]
+    {
+        let repo = project();
+        let path = repo.path();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), path.join("linked")).unwrap();
+        write(
+            &path.join("reqtool.toml"),
+            &settings(
+                "fixture",
+                "maintainers = [\"maintainer\"]\nreviews = \"linked\"",
+            ),
+        );
+        assert!(
+            problems(path).contains("resolves to a directory outside the repository"),
+            "{}",
+            problems(path)
+        );
+    }
+}
+
 #[test]
 fn a_review_bridges_a_real_step_and_is_written_once() {
     let repo = project();
