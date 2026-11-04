@@ -115,9 +115,9 @@ requirements:
     write(
         &app.join("Cargo.toml"),
         "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n\
-         [dependencies]\nmy-hal = { path = \"../my-hal\" }\n\n[workspace]\n",
+         [dependencies]\nmy-hal = { path = \"../my-hal\", optional = true }\n\n[workspace]\n",
     );
-    write(&app.join("src/lib.rs"), "pub use my_hal::answer;\n");
+    write(&app.join("src/lib.rs"), "\n");
     write(&app.join("reqtool.toml"), &settings("app"));
     write(&app.join("goals.md"), "1. **G1 - Goal.** A goal.\n");
     write(&app.join("requirements/link.yaml"), requirements);

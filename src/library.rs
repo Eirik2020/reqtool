@@ -120,8 +120,16 @@ impl Resolved {
         if let Some(found) = self.roots.borrow().as_ref() {
             return Ok(Rc::clone(found));
         }
+        // A library behind a feature is still this project's: without this,
+        // cargo leaves out whatever only a feature pulls in.
         let output = Command::new("cargo")
-            .args(["metadata", "--format-version", "1", "--locked"])
+            .args([
+                "metadata",
+                "--format-version",
+                "1",
+                "--locked",
+                "--all-features",
+            ])
             .env_remove("RUSTUP_TOOLCHAIN")
             .env_remove("RUSTC")
             .env_remove("CARGO")
