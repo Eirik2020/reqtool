@@ -34,6 +34,10 @@ pub fn summary(project: &Project, evidence: &dyn Evidence) -> String {
     for requirement in project.requirements.values() {
         let gap = if has_no_method(requirement) {
             "  (no method)"
+        } else if (0..requirement.verification.entries.len())
+            .any(|entry| !evidence.reviews(requirement, entry).is_empty())
+        {
+            "  (stands on a review)"
         } else {
             ""
         };
@@ -188,6 +192,9 @@ fn detail(
         );
         for (board, status) in evidence.boards(requirement, index) {
             let _ = writeln!(out, "      {board}: {}", status.name());
+        }
+        for step in evidence.reviews(requirement, index) {
+            let _ = writeln!(out, "      stands on a review: {step}");
         }
     }
     out

@@ -16,6 +16,7 @@ pub mod library;
 pub mod lint;
 pub mod project;
 pub mod report;
+pub mod review;
 pub mod roots;
 pub mod runner;
 pub mod schema;

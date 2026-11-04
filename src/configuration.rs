@@ -63,7 +63,7 @@ impl Configuration {
             }
         }
         for (package, version) in &self.externals {
-            let _ = writeln!(text, "extern {package} {version}");
+            let _ = writeln!(text, "extern {package} {}", same_form(version));
         }
         for (name, value) in &self.environment {
             let _ = writeln!(text, "env {name}={value}");
@@ -95,6 +95,15 @@ pub trait Configurations {
 
 /// A board and its sorted features.
 type Key = (String, Vec<String>);
+
+/// A version in the one form both sides of evidence use. A git dependency
+/// pinned to an exact `rev` is `<version>+<commit>`; records written before the
+/// two sides agreed hold `<version>+rev=<commit>`, which compares as the same
+/// version, so evidence on disk keeps its meaning. A registry version cannot
+/// hold `=`, so nothing else is touched.
+pub fn same_form(version: &str) -> String {
+    version.replace("+rev=", "+")
+}
 
 /// Configurations from `cargo check`, one run per board and feature set.
 pub struct Cargo<'a> {
@@ -357,7 +366,7 @@ fn local_directory(package_id: &str) -> Option<PathBuf> {
 
 /// `name` and `version` of a registry or git package ID; `None` for a path
 /// package.
-fn external(package_id: &str) -> Option<(String, String)> {
+pub(crate) fn external(package_id: &str) -> Option<(String, String)> {
     if package_id.starts_with("path+") {
         return None;
     }
@@ -367,10 +376,16 @@ fn external(package_id: &str) -> Option<(String, String)> {
     let (name, version) = fragment
         .rsplit_once('@')
         .or_else(|| Some((source.rsplit('/').next()?, fragment)))?;
-    // A version doesn't move when a git dependency's revision does.
-    let version = match package_id.starts_with("git+") {
-        true => format!("{version}+{reference}"),
-        false => version.to_owned(),
+    // A version doesn't move when a git dependency's revision does. An exact
+    // `rev` is the commit, as the lock file records it; any other reference
+    // keeps its text.
+    let version = match (
+        package_id.starts_with("git+"),
+        reference.strip_prefix("rev="),
+    ) {
+        (true, Some(commit)) => format!("{version}+{commit}"),
+        (true, None) => format!("{version}+{reference}"),
+        (false, _) => version.to_owned(),
     };
     Some((name.to_owned(), version))
 }
@@ -449,12 +464,41 @@ mod tests {
                 "git+https://github.com/o/my-hal?rev={revision}#0.1.0"
             ))
         };
-        assert_eq!(at("abc"), Some(("my-hal".into(), "0.1.0+rev=abc".into())));
+        assert_eq!(at("abc"), Some(("my-hal".into(), "0.1.0+abc".into())));
         assert_ne!(at("abc"), at("def"));
         assert_eq!(
             external("git+https://github.com/o/repo?rev=abc#my-hal@0.1.0"),
-            Some(("my-hal".into(), "0.1.0+rev=abc".into()))
+            Some(("my-hal".into(), "0.1.0+abc".into()))
         );
+        assert_eq!(
+            external("git+https://github.com/o/my-hal?branch=main#0.1.0"),
+            Some(("my-hal".into(), "0.1.0+branch=main".into())),
+            "a reference that is not an exact revision keeps its text"
+        );
+    }
+
+    #[test]
+    fn a_recorded_revision_in_the_older_form_is_the_same_version() {
+        let configuration = |version: &str| Configuration {
+            board: "b".into(),
+            features: vec![],
+            files: BTreeMap::new(),
+            externals: [("my-hal".to_owned(), version.to_owned())].into(),
+            environment: BTreeMap::new(),
+        };
+        assert_eq!(
+            configuration("0.1.0+rev=abc").identity(),
+            configuration("0.1.0+abc").identity()
+        );
+        assert_ne!(
+            configuration("0.1.0+rev=abc").identity(),
+            configuration("0.1.0+def").identity()
+        );
+        assert_ne!(
+            configuration("0.1.0+branch=main").identity(),
+            configuration("0.1.0+main").identity()
+        );
+        assert_eq!(same_form("0.6.1, 0.7.0+rev=abc"), "0.6.1, 0.7.0+abc");
     }
 
     #[test]

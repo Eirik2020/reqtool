@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use crate::config::Config;
 use crate::gates::{self, Gate};
 use crate::items::Resolver;
+use crate::review::{self, Reviews};
 use crate::roots::{self, Root};
 use crate::schema::{
     Entry, Environment, Hazard, Level, Method, Requirement, RequirementFile, SCHEMA_VERSION,
@@ -39,6 +40,8 @@ pub struct Project {
     /// Every source file: identities, declarations and imports.
     pub trace: Trace,
     pub gates: Vec<Gate>,
+    /// The reviewed diff analyses that hold.
+    pub reviews: Reviews,
 }
 
 impl Project {
@@ -126,6 +129,8 @@ impl Project {
             location: "source".to_owned(),
             message: message.clone(),
         }));
+        let (reviews, refused) = review::load(repository, &config);
+        problems.extend(refused);
         let project = Self {
             repository: repository.to_path_buf(),
             config,
@@ -135,6 +140,7 @@ impl Project {
             workspace,
             trace,
             gates,
+            reviews,
         };
         problems.extend(project.validate());
         problems.extend(

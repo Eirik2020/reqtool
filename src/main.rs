@@ -8,8 +8,10 @@ use reqtool::evidence::{self, Current, Outcome, Recorded, RunRequest, Timestamp}
 use reqtool::library::Resolved;
 use reqtool::project::Project;
 use reqtool::report;
+use reqtool::review;
 use reqtool::runner::{self, Ran};
 use reqtool::schema::Method;
+use reqtool::status::{self, Status};
 
 /// Requirements and verification tracing.
 #[derive(Parser)]
@@ -106,6 +108,31 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Write a maintainer's review of a diff analysis of one dependency bump:
+    /// evidence recorded with the crate at --from then counts as if it were
+    /// at --to. Never overwrites a review. Prints the requirements whose
+    /// status it changes.
+    Review {
+        /// The crate that was bumped.
+        #[arg(long = "crate", value_name = "CRATE")]
+        package: String,
+        /// The version evidence was recorded at, as evidence records it:
+        /// `<version>`, or `<version>+<commit>` for a git dependency.
+        #[arg(long)]
+        from: String,
+        /// The version it moved to.
+        #[arg(long)]
+        to: String,
+        /// The written analysis, as a repository-relative path.
+        #[arg(long)]
+        analysis: String,
+        /// Who wrote the analysis.
+        #[arg(long)]
+        analysed_by: String,
+        /// Who reviewed it: one of the project's maintainers.
+        #[arg(long)]
+        reviewed_by: String,
+    },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -150,6 +177,7 @@ fn main() -> ExitCode {
         trace: &project.trace,
         configurations: &configurations,
         libraries: &libraries,
+        reviews: &project.reviews,
     };
     if let Command::Gate { name, board } = &cli.command {
         return gate(&current, name.as_deref(), board.as_deref());
@@ -251,6 +279,24 @@ fn main() -> ExitCode {
                 }
             })
         }
+        Command::Review {
+            package,
+            from,
+            to,
+            analysis,
+            analysed_by,
+            reviewed_by,
+        } => write_review(
+            &current,
+            &review::Request {
+                package: &package,
+                from: &from,
+                to: &to,
+                analysis: &analysis,
+                analysed_by: &analysed_by,
+                reviewed_by: &reviewed_by,
+            },
+        ),
         Command::Test { .. } | Command::Gate { .. } => {
             unreachable!("handled above")
         }
@@ -382,6 +428,67 @@ fn gate(current: &Current<'_>, name: Option<&str>, board: Option<&str>) -> ExitC
             ExitCode::FAILURE
         }
     }
+}
+
+/// Writes a review once it would hold, then says which requirements' status
+/// it changes: restored, or a recorded fail carried forward.
+fn write_review(current: &Current<'_>, request: &review::Request<'_>) -> Result<String, String> {
+    let project = current.project;
+    let review = review::create(
+        &project.repository,
+        &project.config,
+        request,
+        &Timestamp::now(),
+    )?;
+    let records = evidence::load(&project.repository)?;
+    let before = status::compute(
+        &project.requirements,
+        &Recorded::new(current, &records, None)?,
+    );
+    let extended = current.reviews.with(review.clone());
+    let after = status::compute(
+        &project.requirements,
+        &Recorded::new(
+            &Current {
+                reviews: &extended,
+                ..*current
+            },
+            &records,
+            None,
+        )?,
+    );
+    let written = review::write(&project.repository, &project.config, &review)?;
+    let mut out = format!(
+        "reviewed {}: {}\n",
+        written
+            .strip_prefix(&project.repository)
+            .unwrap_or(&written)
+            .display(),
+        review.describe()
+    );
+    let changed = |better: bool| -> Vec<(&String, Status, Status)> {
+        after
+            .iter()
+            .map(|(id, now)| (id, before[id], *now))
+            .filter(|(_, was, now)| if better { now < was } else { now > was })
+            .collect()
+    };
+    for (better, heading) in [
+        (true, "restores"),
+        (false, "carries a recorded fail forward to"),
+    ] {
+        let found = changed(better);
+        if better && found.is_empty() {
+            out.push_str("restores no requirement\n");
+        }
+        if !found.is_empty() {
+            out.push_str(&format!("{heading} {} requirement(s):\n", found.len()));
+        }
+        for (id, was, now) in found {
+            out.push_str(&format!("  {id:<16} {} -> {}\n", was.name(), now.name()));
+        }
+    }
+    Ok(out)
 }
 
 fn read_details(path: &std::path::Path) -> Result<reqtool::details::Details, String> {

@@ -204,6 +204,7 @@ impl Resolved {
             trace: &project.trace,
             configurations: &cargo,
             libraries: &libraries,
+            reviews: &project.reviews,
         };
         let records = evidence::load(&project.repository).map_err(|e| format!("{name}: {e}"))?;
         let recorded =

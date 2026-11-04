@@ -49,6 +49,12 @@ pub trait Evidence {
     fn target_only_files(&self, _requirement: &Requirement) -> Vec<String> {
         Vec::new()
     }
+
+    /// The reviewed steps an entry's status stands on, where it is not the
+    /// status the same evidence gives without reviews.
+    fn reviews(&self, _requirement: &Requirement, _entry: usize) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 pub struct NoEvidence;
