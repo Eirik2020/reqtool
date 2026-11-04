@@ -659,6 +659,23 @@ mod tests {
     }
 
     #[test]
+    fn a_git_revision_reads_the_same_in_the_lock_file_and_the_build() {
+        let lock: LockFile = toml::from_str(
+            r#"[[package]]
+               name = "my-hal"
+               version = "0.1.0"
+               source = "git+https://github.com/o/my-hal?rev=0a1b2c#0a1b2c""#,
+        )
+        .unwrap();
+        let built =
+            crate::configuration::external("git+https://github.com/o/my-hal?rev=0a1b2c#0.1.0");
+        assert_eq!(
+            built,
+            Some(("my-hal".to_owned(), lock.package[0].identity()))
+        );
+    }
+
+    #[test]
     fn paths_are_read_from_macro_tokens() {
         let mut references = References::default();
         references.tokens("x == crate::a::B && foo(super::c) && d".parse().unwrap());
