@@ -440,6 +440,21 @@ fn a_changed_file_or_claim_stays_stale_under_a_review() {
     );
     assert_eq!(status(path), [Status::Stale, Status::Stale]);
 
+    // A board's own build input changing is a difference the review does not
+    // cover, though the board's declaring files are unchanged.
+    let repo = project();
+    let path = repo.path();
+    record(path, Outcome::Pass, 1);
+    bump(path, "dep", "1.0.0", "1.0.1");
+    review(path, &request("dep", "1.0.0", "1.0.1")).unwrap();
+    assert_eq!(status(path), [Status::Verified, Status::Verified]);
+    edit(
+        &path.join("firmware/demo/Cargo.toml"),
+        "[workspace]",
+        "[profile.dev]\nopt-level = 1\n\n[workspace]",
+    );
+    assert_eq!(status(path), [Status::Verified, Status::Stale]);
+
     // Another crate moving as well is a difference the review does not cover.
     let repo = project();
     let path = repo.path();

@@ -451,6 +451,14 @@ mod tests {
             None
         );
         assert_eq!(
+            pair(
+                &[("hal", "0.2.0"), ("other", "5.0.0")],
+                &[("hal", "5.0.0"), ("other", "0.2.1")]
+            ),
+            None,
+            "a version pairs only with the same crate's"
+        );
+        assert_eq!(
             super::pair(&[("hal", "0.2.0")], &[("hal", "0.2.1")], None),
             None,
             "without reviews only the same version pairs"
