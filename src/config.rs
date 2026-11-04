@@ -1,7 +1,7 @@
 //! A project's settings, from `reqtool.toml` at its root: where it keeps its
 //! requirements, roots and evidence, and how its code is built and traced.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
 
@@ -38,8 +38,9 @@ pub struct Config {
     #[serde(default)]
     pub every_file_traced: bool,
     /// What `every_file_traced` leaves out: repository-relative path prefixes,
-    /// matched by whole components, such as a directory of bench crates. A file
-    /// left out is safety-critical only if its own module doc says so.
+    /// matched by whole components, such as a directory of bench crates. A
+    /// file is left out only when it and every package reaching it sit under
+    /// one; it is then safety-critical only if its own module doc says so.
     #[serde(default)]
     pub every_file_traced_except: Vec<String>,
     /// Directories of retired documents, which no active procedure may point into.
@@ -83,33 +84,47 @@ impl Config {
             .unwrap_or_else(|| format!("{}/gates.yaml", self.requirements))
     }
 
-    /// The entry of `every_file_traced_except` that leaves a source file out,
-    /// matched against the file's path with `.` and `..` resolved, so a file a
-    /// `#[path]` attribute reaches is matched where it sits.
-    pub fn left_out_by(&self, path: &str) -> Option<&str> {
+    /// The entry of `every_file_traced_except` a repository-relative path
+    /// sits under, by whole components. The path is the real one, with links
+    /// resolved; this says only where it sits, not that it is left out.
+    pub fn covering(&self, path: &Path) -> Option<&str> {
         self.every_file_traced_except
             .iter()
             .map(String::as_str)
-            .find(|prefix| leaves_out(prefix, path))
+            .find(|entry| path.starts_with(trimmed(entry)))
     }
 
     /// What is wrong with `every_file_traced_except` on its own, before any
     /// file is looked at.
     pub fn except_problems(&self) -> Vec<String> {
         let key = "every_file_traced_except";
+        let entries = &self.every_file_traced_except;
         let mut problems = Vec::new();
-        if !self.every_file_traced && !self.every_file_traced_except.is_empty() {
+        if !self.every_file_traced && !entries.is_empty() {
             problems.push(format!(
                 "{key} is set, but every_file_traced is not, so it leaves out nothing"
             ));
         }
-        for (index, prefix) in self.every_file_traced_except.iter().enumerate() {
-            if let Some(reason) = prefix_problem(prefix) {
+        for (index, entry) in entries.iter().enumerate() {
+            if let Some(reason) = prefix_problem(entry) {
                 problems.push(format!(
-                    "{key}: {prefix:?} {reason}; give a path prefix relative to the repository"
+                    "{key}: {entry:?} {reason}; give a path prefix relative to the repository"
                 ));
-            } else if self.every_file_traced_except[..index].contains(prefix) {
-                problems.push(format!("{key}: {prefix:?} is listed twice"));
+                continue;
+            }
+            let this = Path::new(trimmed(entry));
+            for earlier in entries[..index]
+                .iter()
+                .filter(|e| prefix_problem(e).is_none())
+            {
+                let other = Path::new(trimmed(earlier));
+                if this == other {
+                    problems.push(format!("{key}: {entry:?} is listed twice"));
+                } else if this.starts_with(other) || other.starts_with(this) {
+                    problems.push(format!(
+                        "{key}: {entry:?} overlaps {earlier:?}; list only the outer one"
+                    ));
+                }
             }
         }
         problems
@@ -136,16 +151,12 @@ fn prefix_problem(prefix: &str) -> Option<&'static str> {
     if prefix.contains(['*', '?', '[', ']', '{', '}']) {
         return Some("is a pattern, and only path prefixes are matched");
     }
-    let components: Vec<&str> = prefix
-        .strip_suffix('/')
-        .unwrap_or(prefix)
-        .split('/')
-        .collect();
+    let components: Vec<&str> = trimmed(prefix).split('/').collect();
     if components.iter().any(|component| component.is_empty()) {
         return Some("has an empty component");
     }
     if components.contains(&"..") {
-        return Some("climbs out with `..`");
+        return Some("has a `..` component");
     }
     if components.contains(&".") {
         return Some("has a `.` component");
@@ -153,26 +164,9 @@ fn prefix_problem(prefix: &str) -> Option<&'static str> {
     None
 }
 
-/// Whether one prefix covers a source file's path, `.` and `..` resolved.
-pub fn leaves_out(prefix: &str, path: &str) -> bool {
-    lexical(path).starts_with(prefix)
-}
-
-/// A relative path with `.` and `..` resolved by its text alone.
-fn lexical(path: &str) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in Path::new(path).components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                if !out.pop() {
-                    out.push("..");
-                }
-            }
-            other => out.push(other),
-        }
-    }
-    out
+/// An entry without its trailing `/`.
+fn trimmed(entry: &str) -> &str {
+    entry.strip_suffix('/').unwrap_or(entry)
 }
 
 #[cfg(test)]
@@ -227,26 +221,44 @@ mod tests {
     }
 
     #[test]
-    fn a_prefix_leaves_out_whole_components() {
-        let config = traced_except(&["benches", "tools/gen.rs"]);
+    fn an_entry_covers_whole_components() {
+        let config = traced_except(&["benches/", "tools/gen.rs"]);
         assert!(config.except_problems().is_empty());
-        assert_eq!(config.left_out_by("benches/a/src/main.rs"), Some("benches"));
-        assert_eq!(config.left_out_by("tools/gen.rs"), Some("tools/gen.rs"));
-        assert_eq!(config.left_out_by("benchesx/src/main.rs"), None);
-        assert_eq!(config.left_out_by("src/benches/mod.rs"), None);
-        assert_eq!(config.left_out_by("src/lib.rs"), None);
+        let covering = |path: &str| config.covering(Path::new(path));
+        assert_eq!(covering("benches/a/src/main.rs"), Some("benches/"));
+        assert_eq!(covering("benches"), Some("benches/"));
+        assert_eq!(covering("tools/gen.rs"), Some("tools/gen.rs"));
+        assert_eq!(covering("benchesx/src/main.rs"), None);
+        assert_eq!(covering("src/benches/mod.rs"), None);
+        assert_eq!(covering("src/lib.rs"), None);
+        assert_eq!(covering(""), None);
     }
 
     #[test]
-    fn a_prefix_matches_where_a_file_sits_once_dots_are_resolved() {
-        let config = traced_except(&["benches/common/"]);
-        assert!(config.except_problems().is_empty());
-        assert_eq!(
-            config.left_out_by("benches/a/src/../../common/shared.rs"),
-            Some("benches/common/")
+    fn entries_may_not_overlap_in_either_order() {
+        for entries in [
+            ["benches", "benches/common"],
+            ["benches/common", "benches"],
+            ["benches/", "benches/common/"],
+        ] {
+            let problems = traced_except(&entries).except_problems();
+            assert!(
+                problems.len() == 1 && problems[0].contains("overlaps"),
+                "{entries:?}: {problems:?}"
+            );
+        }
+        for entries in [["benches", "benches"], ["benches/", "benches"]] {
+            let problems = traced_except(&entries).except_problems();
+            assert!(
+                problems.len() == 1 && problems[0].contains("listed twice"),
+                "{entries:?}: {problems:?}"
+            );
+        }
+        assert!(
+            traced_except(&["benches", "benchesx", "src/benches"])
+                .except_problems()
+                .is_empty()
         );
-        assert_eq!(config.left_out_by("benches/a/src/main.rs"), None);
-        assert_eq!(config.left_out_by("benches/common/../../src/lib.rs"), None);
     }
 
     #[test]
@@ -258,8 +270,8 @@ mod tests {
             ("benches/*", "is a pattern"),
             ("**/benches", "is a pattern"),
             ("benches//a", "empty component"),
-            ("../benches", "climbs out"),
-            ("benches/../src", "climbs out"),
+            ("../benches", "has a `..` component"),
+            ("src/../benches", "has a `..` component"),
             ("./benches", "`.` component"),
         ] {
             let problems = traced_except(&[prefix]).except_problems();
@@ -268,11 +280,6 @@ mod tests {
                 "{prefix:?}: {problems:?}"
             );
         }
-        let problems = traced_except(&["benches", "benches"]).except_problems();
-        assert!(
-            problems.len() == 1 && problems[0].contains("listed twice"),
-            "{problems:?}"
-        );
     }
 
     #[test]

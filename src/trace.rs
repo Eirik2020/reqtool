@@ -59,6 +59,8 @@ pub enum Import {
 #[derive(Clone, Debug)]
 pub struct SourceFile {
     pub package: String,
+    /// Every package whose module tree reaches this path.
+    pub reached_from: BTreeSet<String>,
     pub identity: String,
     pub requirements: Vec<String>,
     pub critical: bool,
@@ -167,6 +169,7 @@ impl Builder<'_> {
                         path.clone(),
                         SourceFile {
                             package: package.package.clone(),
+                            reached_from: BTreeSet::new(),
                             identity,
                             requirements,
                             critical,
@@ -183,6 +186,7 @@ impl Builder<'_> {
         }
         let imports = self.imports(package, module);
         if let Some(file) = self.trace.files.get_mut(&path) {
+            file.reached_from.insert(package.package.clone());
             file.imports.extend(imports);
             file.imports.remove(&path);
         }

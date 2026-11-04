@@ -123,9 +123,7 @@ pub fn check(project: &Project, target: &str, evidence: &dyn Evidence) -> Result
             "not safety-critical"
         }
     );
-    if project.config.every_file_traced
-        && let Some(prefix) = project.config.left_out_by(&path)
-    {
+    if let Some(prefix) = project.left_out_by(&path) {
         let _ = writeln!(
             out,
             "  every_file_traced leaves it out ({prefix}){}",

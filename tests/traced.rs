@@ -201,23 +201,108 @@ fn benches_are_left_out_and_the_library_stays_traced() {
     assert!(!found.contains("hil/"), "{found}");
 }
 
+/// `validate`'s output for the repository, which must fail.
+fn refused(root: &Path) -> String {
+    let output = tool(root, &["validate"]);
+    assert!(!output.status.success(), "{}", text(&output));
+    text(&output)
+}
+
 #[test]
-fn a_prefix_matches_a_shared_file_where_it_sits() {
+fn a_file_the_library_compiles_in_stays_traced_wherever_it_sits() {
     let root = tempfile::tempdir().unwrap();
     let root = root.path();
-    repository(root, Some(r#"["hil/common"]"#));
-    let output = tool(root, &["validate"]);
-    assert!(!output.status.success());
-    let found = text(&output);
+    repository(root, Some(r#"["hil"]"#));
+    edit(
+        &root.join("src/lib.rs"),
+        "pub fn answer",
+        "#[path = \"../hil/common/vectors.rs\"]\nmod vectors;\n\npub fn answer",
+    );
+    write(
+        &root.join("hil/common/vectors.rs"),
+        "#[no_mangle]\npub extern \"C\" fn HardFault() {}\n",
+    );
+    let found = refused(root);
     assert!(
-        found.contains("every_file_traced leaves out hil/common: 1 file(s)"),
+        found.contains(
+            "src/../hil/common/vectors.rs: is safety-critical, and declares no requirement"
+        ),
         "{found}"
     );
     assert!(
-        found.contains("hil/bench-a/src/main.rs: is safety-critical"),
+        found.contains("every_file_traced leaves out hil: 2 file(s)\n"),
         "{found}"
     );
-    assert!(!found.contains(&format!("{SHARED_PATH}: ")), "{found}");
+    let file = text(&tool(root, &["check", "src/../hil/common/vectors.rs"]));
+    assert!(
+        file.contains("  safety-critical") && !file.contains("leaves it out"),
+        "{file}"
+    );
+}
+
+#[test]
+fn a_file_a_bench_and_the_library_both_reach_stays_traced() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
+    repository(root, Some(r#"["hil"]"#));
+    edit(
+        &root.join("src/lib.rs"),
+        "pub fn answer",
+        "#[path = \"../hil/common/shared.rs\"]\npub mod shared;\n\npub fn answer",
+    );
+    let found = refused(root);
+    for path in ["src/../hil/common/shared.rs", SHARED_PATH] {
+        assert!(
+            found.contains(&format!(
+                "{path}: is safety-critical, and declares no requirement"
+            )),
+            "{path}: {found}"
+        );
+    }
+    assert!(!found.contains("hil/bench-a/src/main.rs: "), "{found}");
+    assert!(
+        found.contains("every_file_traced leaves out hil: 1 file(s)\n"),
+        "{found}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_file_is_placed_where_it_really_is() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
+    let elsewhere = tempfile::tempdir().unwrap();
+    repository(root, Some(r#"["hil"]"#));
+    // Through a link, a bench reaches a file that sits in the library's
+    // directory, though its path reads as if under hil/; and one outside the
+    // repository.
+    std::fs::create_dir_all(root.join("src/inner")).unwrap();
+    std::os::unix::fs::symlink("../src/inner", root.join("hil/up")).unwrap();
+    write(&root.join("src/driver.rs"), "pub fn drive() {}\n");
+    std::os::unix::fs::symlink(elsewhere.path(), root.join("hil/outside")).unwrap();
+    write(&elsewhere.path().join("ext.rs"), "pub fn far() {}\n");
+    edit(
+        &root.join("hil/bench-a/src/main.rs"),
+        "fn main()",
+        "#[path = \"../../up/../driver.rs\"]\nmod driver;\n\
+         #[path = \"../../outside/ext.rs\"]\nmod ext;\n\nfn main()",
+    );
+    let found = refused(root);
+    for path in [
+        "hil/bench-a/src/../../up/../driver.rs",
+        "hil/bench-a/src/../../outside/ext.rs",
+    ] {
+        assert!(
+            found.contains(&format!(
+                "{path}: is safety-critical, and declares no requirement"
+            )),
+            "{path}: {found}"
+        );
+    }
+    assert!(
+        found.contains("every_file_traced leaves out hil: 2 file(s)\n"),
+        "{found}"
+    );
 }
 
 #[test]
@@ -255,15 +340,16 @@ fn an_exception_must_leave_out_something_and_stay_inside() {
     for (except, expected) in [
         (r#"["benches"]"#, r#""benches" leaves out no source file"#),
         (r#"["hil/bench-a/src/bin"]"#, "leaves out no source file"),
+        (r#"["hil/common"]"#, "leaves out no source file"),
         (r#"["/hil"]"#, "is absolute"),
-        (r#"["../hil"]"#, "climbs out with `..`"),
+        (r#"["../hil"]"#, "has a `..` component"),
+        (r#"["src/../hil"]"#, "has a `..` component"),
         (r#"["./hil"]"#, "has a `.` component"),
         (r#"["hil/*"]"#, "is a pattern"),
         (r#"["hil", "hil"]"#, "is listed twice"),
-        (
-            r#"["hil", "hil/common"]"#,
-            "leaves out only what an earlier entry does",
-        ),
+        (r#"["hil/", "hil"]"#, "is listed twice"),
+        (r#"["hil", "hil/common"]"#, "overlaps"),
+        (r#"["hil/common", "hil"]"#, "overlaps"),
     ] {
         let root = tempfile::tempdir().unwrap();
         let root = root.path();

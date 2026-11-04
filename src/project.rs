@@ -42,6 +42,9 @@ pub struct Project {
     pub gates: Vec<Gate>,
     /// The reviewed diff analyses that hold.
     pub reviews: Reviews,
+    /// The source files `every_file_traced_except` leaves out, each with the
+    /// entry it sits under.
+    pub left_out: BTreeMap<String, String>,
 }
 
 impl Project {
@@ -120,10 +123,11 @@ impl Project {
             }
         };
         let mut trace = Trace::build(repository, &workspace)?;
-        problems.extend(left_out_problems(&config, &trace));
+        let left_out = left_out_files(repository, &config, &workspace, &trace);
+        problems.extend(left_out_problems(&config, &left_out));
         if config.every_file_traced {
             for (path, file) in &mut trace.files {
-                if config.left_out_by(path).is_none() {
+                if !left_out.contains_key(path) {
                     file.critical = true;
                 }
             }
@@ -144,6 +148,7 @@ impl Project {
             trace,
             gates,
             reviews,
+            left_out,
         };
         problems.extend(project.validate());
         problems.extend(
@@ -214,7 +219,7 @@ impl Project {
     }
 
     /// What `every_file_traced_except` leaves out: each entry, with the files
-    /// it covers. Empty unless `every_file_traced` is on.
+    /// it leaves out.
     pub fn left_out(&self) -> Vec<(&str, Vec<&str>)> {
         if !self.config.every_file_traced {
             return Vec::new();
@@ -222,17 +227,21 @@ impl Project {
         self.config
             .every_file_traced_except
             .iter()
-            .map(|prefix| {
+            .map(|entry| {
                 let files = self
-                    .trace
-                    .files
-                    .keys()
-                    .filter(|path| self.config.left_out_by(path) == Some(prefix.as_str()))
-                    .map(String::as_str)
+                    .left_out
+                    .iter()
+                    .filter(|(_, by)| *by == entry)
+                    .map(|(path, _)| path.as_str())
                     .collect();
-                (prefix.as_str(), files)
+                (entry.as_str(), files)
             })
             .collect()
+    }
+
+    /// The entry that leaves a source file out, if one does.
+    pub fn left_out_by(&self, path: &str) -> Option<&str> {
+        self.left_out.get(path).map(String::as_str)
     }
 
     fn location(&self, id: &str) -> String {
@@ -341,26 +350,75 @@ impl Project {
     }
 }
 
-/// `every_file_traced_except` checked on its own and against the source files:
-/// an entry that leaves out no file any module tree reaches says nothing, and
-/// is refused like one that is malformed.
-fn left_out_problems(config: &Config, trace: &Trace) -> Vec<Problem> {
+/// The source files `every_file_traced_except` leaves out, each with the entry
+/// it sits under. A file is left out only when the real file, links resolved,
+/// sits inside the repository under an entry, and so does the directory of
+/// every package whose module tree reaches it, by any path. A file anything
+/// else compiles in, or that cannot be placed, stays traced.
+fn left_out_files(
+    repository: &Path,
+    config: &Config,
+    workspace: &Workspace,
+    trace: &Trace,
+) -> BTreeMap<String, String> {
+    let mut left_out = BTreeMap::new();
+    if !config.every_file_traced || config.every_file_traced_except.is_empty() {
+        return left_out;
+    }
+    let Ok(root) = repository.canonicalize() else {
+        return left_out;
+    };
+    let inside = |path: &Path| {
+        path.canonicalize()
+            .ok()
+            .and_then(|real| real.strip_prefix(&root).ok().map(Path::to_path_buf))
+    };
+    let real: BTreeMap<&str, Option<PathBuf>> = trace
+        .files
+        .keys()
+        .map(|key| (key.as_str(), inside(&repository.join(key))))
+        .collect();
+    // Every package reaching each real file, through any of its paths.
+    let mut reached: BTreeMap<&Path, BTreeSet<&str>> = BTreeMap::new();
+    for (key, file) in &trace.files {
+        if let Some(Some(real)) = real.get(key.as_str()) {
+            reached
+                .entry(real.as_path())
+                .or_default()
+                .extend(file.reached_from.iter().map(String::as_str));
+        }
+    }
+    let package_left_out = |package: &str| {
+        workspace
+            .packages
+            .get(package)
+            .and_then(|found| inside(&found.directory))
+            .is_some_and(|directory| config.covering(&directory).is_some())
+    };
+    for (key, real) in &real {
+        let Some(real) = real else { continue };
+        let Some(entry) = config.covering(real) else {
+            continue;
+        };
+        let packages = &reached[real.as_path()];
+        if !packages.is_empty() && packages.iter().all(|package| package_left_out(package)) {
+            left_out.insert((*key).to_owned(), entry.to_owned());
+        }
+    }
+    left_out
+}
+
+/// `every_file_traced_except` checked on its own and against what it leaves
+/// out: an entry that leaves out no file says nothing, and is refused like
+/// one that is malformed.
+fn left_out_problems(config: &Config, left_out: &BTreeMap<String, String>) -> Vec<Problem> {
     let mut messages = config.except_problems();
     if messages.is_empty() && config.every_file_traced {
-        for prefix in &config.every_file_traced_except {
-            let covered = |path: &&String| crate::config::leaves_out(prefix, path);
-            if !trace.files.keys().any(|path| covered(&path)) {
+        for entry in &config.every_file_traced_except {
+            if !left_out.values().any(|by| by == entry) {
                 messages.push(format!(
-                    "every_file_traced_except: {prefix:?} leaves out no source file"
-                ));
-            } else if !trace
-                .files
-                .keys()
-                .filter(covered)
-                .any(|path| config.left_out_by(path) == Some(prefix.as_str()))
-            {
-                messages.push(format!(
-                    "every_file_traced_except: {prefix:?} leaves out only what an earlier entry does"
+                    "every_file_traced_except: {entry:?} leaves out no source file; a file is \
+                     left out only when it and every package reaching it sit under an entry"
                 ));
             }
         }
