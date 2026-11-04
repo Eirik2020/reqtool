@@ -356,6 +356,14 @@ fn entry_problems(
                 problems.push(message);
             }
         }
+        Method::Library(link) => {
+            if entry.hazard != Hazard::None || !entry.preconditions.is_empty() {
+                problems.push("a library entry runs nothing here, so states no hazard".into());
+            }
+            if let Err(message) = crate::library::parse(link) {
+                problems.push(message);
+            }
+        }
     }
     problems
 }

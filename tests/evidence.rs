@@ -6,6 +6,7 @@ use std::process::Command;
 
 use reqtool::configuration::Cargo;
 use reqtool::evidence::{self, Current, Outcome, Recorded, RunRequest, Timestamp};
+use reqtool::library::NoLibraries;
 use reqtool::project::Project;
 use reqtool::schema::Method;
 use reqtool::status::{self, Status};
@@ -98,6 +99,7 @@ fn build(
         project: &project,
         trace: &project.trace,
         configurations: &cargo,
+        libraries: &NoLibraries,
     };
     evidence::build(&current, request, now)
 }
@@ -119,6 +121,7 @@ fn recorded(repository: &Path) -> (Project, Recorded) {
         project: &project,
         trace: &project.trace,
         configurations: &cargo,
+        libraries: &NoLibraries,
     };
     let recorded = Recorded::new(&current, &records, None).unwrap();
     (project, recorded)

@@ -102,6 +102,7 @@ pub struct Cargo<'a> {
     workspace: &'a Workspace,
     cache: RefCell<HashMap<Key, Rc<Configuration>>>,
     host_files: RefCell<Option<Rc<BTreeSet<String>>>>,
+    target_dir: Option<PathBuf>,
 }
 
 impl<'a> Cargo<'a> {
@@ -111,7 +112,29 @@ impl<'a> Cargo<'a> {
             workspace,
             cache: RefCell::new(HashMap::new()),
             host_files: RefCell::new(None),
+            target_dir: None,
         }
+    }
+
+    /// Builds under `directory`, for a repository that isn't this project's own.
+    #[must_use]
+    pub fn with_target_dir(mut self, directory: PathBuf) -> Self {
+        self.target_dir = Some(directory);
+        self
+    }
+
+    fn cargo(&self) -> Command {
+        let mut command = Command::new("cargo");
+        // The project's own `rust-toolchain.toml` decides, not whichever
+        // toolchain is running this tool.
+        command
+            .env_remove("RUSTUP_TOOLCHAIN")
+            .env_remove("RUSTC")
+            .env_remove("CARGO");
+        if let Some(directory) = &self.target_dir {
+            command.env("CARGO_TARGET_DIR", directory);
+        }
+        command
     }
 }
 
@@ -124,7 +147,8 @@ impl Configurations for Cargo<'_> {
         let host = crate::runner::host_triple(self.repository)?;
         let mut files = BTreeSet::new();
         for features in &config.test_features {
-            let output = Command::new("cargo")
+            let output = self
+                .cargo()
                 .args([
                     "check",
                     "--workspace",
@@ -137,9 +161,6 @@ impl Configurations for Cargo<'_> {
                     "--features",
                     &features.join(","),
                 ])
-                .env_remove("RUSTUP_TOOLCHAIN")
-                .env_remove("RUSTC")
-                .env_remove("CARGO")
                 .current_dir(self.repository)
                 .output()
                 .map_err(|error| format!("host test build: cannot run cargo: {error}"))?;
@@ -177,14 +198,9 @@ impl Configurations for Cargo<'_> {
             .boards
             .get(board)
             .ok_or_else(|| format!("no firmware app for board {board}"))?;
-        let mut command = Command::new("cargo");
-        // The app's own `rust-toolchain.toml` decides, not whichever
-        // toolchain is running this tool.
+        let mut command = self.cargo();
         command
             .args(["check", "--locked", "--quiet", "--message-format=json"])
-            .env_remove("RUSTUP_TOOLCHAIN")
-            .env_remove("RUSTC")
-            .env_remove("CARGO")
             .current_dir(&app.directory);
         if !features.is_empty() {
             command.arg("--features").arg(features.join(","));
@@ -345,9 +361,18 @@ fn external(package_id: &str) -> Option<(String, String)> {
     if package_id.starts_with("path+") {
         return None;
     }
-    let (_, name_version) = package_id.rsplit_once('#')?;
-    let (name, version) = name_version.rsplit_once('@')?;
-    Some((name.to_owned(), version.to_owned()))
+    let (url, fragment) = package_id.rsplit_once('#')?;
+    let (source, reference) = url.split_once('?').unwrap_or((url, ""));
+    // Cargo leaves the name out where the URL's last segment already says it.
+    let (name, version) = fragment
+        .rsplit_once('@')
+        .or_else(|| Some((source.rsplit('/').next()?, fragment)))?;
+    // A version doesn't move when a git dependency's revision does.
+    let version = match package_id.starts_with("git+") {
+        true => format!("{version}+{reference}"),
+        false => version.to_owned(),
+    };
+    Some((name.to_owned(), version))
 }
 
 /// The `.d` file beside a `lib<name>-<hash>.rmeta` (or `.rlib`, or a binary).
@@ -406,6 +431,31 @@ pub fn rerun_files(text: &str, package: &Path) -> BTreeSet<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_external_crate_is_named_from_any_package_id() {
+        assert_eq!(
+            external("registry+https://github.com/rust-lang/crates.io-index#defmt@1.2.0"),
+            Some(("defmt".into(), "1.2.0".into()))
+        );
+        assert_eq!(external("path+file:///r/crates/a#0.1.0"), None);
+        assert_eq!(external("path+file:///r/crates/a#b@0.1.0"), None);
+    }
+
+    #[test]
+    fn a_git_crate_is_identified_by_its_revision() {
+        let at = |revision: &str| {
+            external(&format!(
+                "git+https://github.com/o/my-hal?rev={revision}#0.1.0"
+            ))
+        };
+        assert_eq!(at("abc"), Some(("my-hal".into(), "0.1.0+rev=abc".into())));
+        assert_ne!(at("abc"), at("def"));
+        assert_eq!(
+            external("git+https://github.com/o/repo?rev=abc#my-hal@0.1.0"),
+            Some(("my-hal".into(), "0.1.0+rev=abc".into()))
+        );
+    }
 
     #[test]
     fn dep_info_lists_the_first_rules_dependencies() {

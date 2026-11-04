@@ -120,6 +120,7 @@ pub fn claim(
             "procedure {reference} {}",
             sha256(procedure_section(repository, reference)?.as_bytes())
         ),
+        Method::Library(link) => format!("library {link}"),
     };
     let preconditions: Vec<String> = entry
         .preconditions

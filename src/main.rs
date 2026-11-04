@@ -5,6 +5,7 @@ use clap::{ArgGroup, Parser, Subcommand, ValueEnum};
 
 use reqtool::configuration::{Cargo, Configurations};
 use reqtool::evidence::{self, Current, Outcome, Recorded, RunRequest, Timestamp};
+use reqtool::library::Resolved;
 use reqtool::project::Project;
 use reqtool::report;
 use reqtool::runner::{self, Ran};
@@ -135,10 +136,20 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     let configurations = Cargo::new(&project.repository, &project.workspace);
+    let libraries = Resolved::new(&project.repository);
+    let broken = libraries.problems(&project);
+    for problem in &broken {
+        eprintln!("{problem}");
+    }
+    if !broken.is_empty() {
+        eprintln!("{} problem(s)", broken.len());
+        return ExitCode::FAILURE;
+    }
     let current = Current {
         project: &project,
         trace: &project.trace,
         configurations: &configurations,
+        libraries: &libraries,
     };
     if let Command::Gate { name, board } = &cli.command {
         return gate(&current, name.as_deref(), board.as_deref());

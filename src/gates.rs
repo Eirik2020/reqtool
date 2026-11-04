@@ -199,7 +199,8 @@ pub fn check(
                 {
                     continue;
                 }
-                let status = if entry.level.on_target() {
+                let inherited = matches!(entry.method, crate::schema::Method::Library(_));
+                let status = if entry.level.on_target() && !inherited {
                     let board = board.unwrap_or_default();
                     evidence
                         .boards(requirement, index)

@@ -24,7 +24,7 @@ computed from it, never written.
 - **A library presents its requirements and supplies its evidence.** A project
   using it maps its own requirements onto them, by crate and ID
   (`my-hal:UART-012`), and inherits that evidence. IDs carry no project
-  prefix; the crate name does that. The mapping is not built yet.
+  prefix; the crate name does that.
 
 ## A project's settings
 
@@ -171,6 +171,23 @@ requirements:
           method:
             procedure: procedures.md#Heading
 ```
+
+A third method inherits a library's evidence:
+
+```yaml
+        - level: target
+          environment: development
+          method:
+            library: my-hal:UART-012
+```
+
+Cargo says which copy of `my-hal` this project builds, so the status is what that
+revision's own requirements and evidence give, computed there. The crate needs a
+`reqtool.toml` with that name, and the requirement needs an entry at the level
+claimed. Building it to judge it uses `target/reqtool-libraries/`. An entry like
+this covers only the library's part: a requirement's other entries still stand on
+this project's own evidence. A pin's commit is part of what evidence records, so
+moving it flags the files importing the crate.
 
 A requirement is verified by its own entries only; a parent is never proved
 through its children. Unknown fields are refused, and there is no `status`

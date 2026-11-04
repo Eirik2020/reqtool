@@ -28,6 +28,7 @@ use crate::configuration::{Configuration, Configurations};
 use crate::details::{self, Details};
 use crate::identity;
 use crate::items::Resolver;
+use crate::library::Libraries;
 use crate::project::Project;
 use crate::schema::{Entry, Environment, Hazard, Level, Method, Requirement};
 use crate::status::{Evidence, Status};
@@ -242,6 +243,7 @@ pub struct Current<'a> {
     pub project: &'a Project,
     pub trace: &'a Trace,
     pub configurations: &'a dyn Configurations,
+    pub libraries: &'a dyn Libraries,
 }
 
 impl Current<'_> {
@@ -291,6 +293,7 @@ impl Current<'_> {
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),
+            Method::Library(_) => Vec::new(),
         })
     }
 
@@ -367,6 +370,11 @@ impl Recorded {
             let mut host_entries = Vec::new();
             for (index, entry) in requirement.verification.entries.iter().enumerate() {
                 let key = (requirement.id.clone(), index);
+                // Nothing runs here: it stands or falls with the library's own.
+                if let Method::Library(link) = &entry.method {
+                    statuses.insert(key, current.libraries.status(link)?);
+                    continue;
+                }
                 let relevant: Vec<(&Record, &RunResult)> = records
                     .iter()
                     .flat_map(|record| record.results.iter().map(move |result| (record, result)))
@@ -724,6 +732,7 @@ fn describe(method: &Method) -> String {
     match method {
         Method::Test(path) => format!("test {path}"),
         Method::Procedure(reference) => format!("procedure {reference}"),
+        Method::Library(link) => format!("library {link}"),
     }
 }
 
@@ -733,6 +742,7 @@ fn method_slug(method: &Method) -> String {
         Method::Procedure(reference) => {
             reference.rsplit('#').next().unwrap_or(reference).to_owned()
         }
+        Method::Library(link) => link.clone(),
     };
     let slug: String = raw
         .chars()

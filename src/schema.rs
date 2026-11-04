@@ -100,13 +100,15 @@ pub enum Hazard {
     Personnel,
 }
 
-/// What runs the verification: a Rust test found by parsing, or a written
-/// procedure named by `path#heading`.
+/// What runs the verification: a Rust test found by parsing, a written
+/// procedure named by `path#heading`, or a library's requirement named by
+/// `crate:ID`, whose evidence this entry inherits.
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Method {
     Test(String),
     Procedure(String),
+    Library(String),
 }
 
 impl Level {

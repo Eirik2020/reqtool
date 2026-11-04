@@ -604,7 +604,25 @@ struct LockPackage {
     name: String,
     version: String,
     #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
     dependencies: Vec<String>,
+}
+
+impl LockPackage {
+    /// Its version, with the commit for a git package: a version doesn't move
+    /// when the revision does.
+    fn identity(&self) -> String {
+        match self
+            .source
+            .as_deref()
+            .filter(|source| source.starts_with("git+"))
+            .and_then(|source| source.rsplit_once('#'))
+        {
+            Some((_, commit)) => format!("{}+{commit}", self.version),
+            None => self.version.clone(),
+        }
+    }
 }
 
 impl LockFile {
@@ -615,14 +633,14 @@ impl LockFile {
             .dependencies
             .iter()
             .find(|spec| spec.split_whitespace().next() == Some(dependency))?;
-        match spec.split_whitespace().nth(1) {
-            Some(version) => Some(version.to_owned()),
-            None => self
-                .package
-                .iter()
-                .find(|found| found.name == dependency)
-                .map(|found| found.version.clone()),
-        }
+        let mut words = spec.split_whitespace().skip(1);
+        let version = words.next();
+        self.package
+            .iter()
+            .find(|found| {
+                found.name == dependency && version.is_none_or(|version| found.version == version)
+            })
+            .map(LockPackage::identity)
     }
 }
 

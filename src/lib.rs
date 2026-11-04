@@ -12,6 +12,7 @@ pub mod evidence;
 pub mod gates;
 pub mod identity;
 pub mod items;
+pub mod library;
 pub mod lint;
 pub mod project;
 pub mod report;

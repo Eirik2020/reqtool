@@ -176,6 +176,7 @@ fn detail(
         let method = match &entry.method {
             Method::Test(path) => format!("test {path}"),
             Method::Procedure(reference) => format!("procedure {reference}"),
+            Method::Library(link) => format!("library {link}"),
         };
         let _ = writeln!(
             out,
