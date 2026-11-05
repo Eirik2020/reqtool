@@ -193,6 +193,7 @@ fn main() -> ExitCode {
         Command::Validate => {
             let unlinked = project.trace_findings();
             let findings = reqtool::lint::project(&project);
+            print!("{}", report::left_out(&project));
             for finding in &findings {
                 eprintln!("{finding}");
             }

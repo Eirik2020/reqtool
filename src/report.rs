@@ -31,6 +31,7 @@ pub fn summary(project: &Project, evidence: &dyn Evidence) -> String {
         let _ = write!(out, "; {unmethoded} with no verification method yet");
     }
     out.push('\n');
+    out.push_str(&left_out(project));
     for requirement in project.requirements.values() {
         let gap = if has_no_method(requirement) {
             "  (no method)"
@@ -48,6 +49,28 @@ pub fn summary(project: &Project, evidence: &dyn Evidence) -> String {
             statuses[&requirement.id].name(),
             requirement.title
         );
+    }
+    out
+}
+
+/// One line per entry of `every_file_traced_except`: how many source files it
+/// leaves out, and how many of those their own marker keeps safety-critical.
+pub fn left_out(project: &Project) -> String {
+    let mut out = String::new();
+    for (prefix, files) in project.left_out() {
+        let marked = files
+            .iter()
+            .filter(|path| project.trace.files[**path].critical)
+            .count();
+        let _ = write!(
+            out,
+            "every_file_traced leaves out {prefix}: {} file(s)",
+            files.len()
+        );
+        if marked > 0 {
+            let _ = write!(out, ", {marked} kept safety-critical by their own marker");
+        }
+        out.push('\n');
     }
     out
 }
@@ -100,6 +123,17 @@ pub fn check(project: &Project, target: &str, evidence: &dyn Evidence) -> Result
             "not safety-critical"
         }
     );
+    if let Some(prefix) = project.left_out_by(&path) {
+        let _ = writeln!(
+            out,
+            "  every_file_traced leaves it out ({prefix}){}",
+            if file.critical {
+                ", and its own marker keeps it safety-critical"
+            } else {
+                ""
+            }
+        );
+    }
     let files = file
         .imports
         .values()
@@ -202,7 +236,9 @@ fn detail(
 
 /// Maturity for one configuration: every requirement declared by
 /// the safety-critical files it compiles in, with its status there, and the
-/// safety-critical files that declare nothing.
+/// safety-critical files that declare nothing. Requirements declared only by
+/// files it compiles in that `every_file_traced_except` leaves out are listed
+/// apart, so none drops out of sight.
 pub fn maturity(
     project: &Project,
     configuration: &Configuration,
@@ -251,6 +287,31 @@ pub fn maturity(
     for (id, files) in &declared {
         let status = statuses.get(*id).map_or("unknown", |status| status.name());
         let _ = writeln!(out, "{id:<16} {status:<10} {}", files.join(", "));
+    }
+    let mut apart: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (path, file) in &project.trace.files {
+        if file.critical
+            || project.left_out_by(path).is_none()
+            || !configuration.files.contains_key(path)
+        {
+            continue;
+        }
+        for id in &file.requirements {
+            if !declared.contains_key(id.as_str()) {
+                apart.entry(id.as_str()).or_default().push(path.as_str());
+            }
+        }
+    }
+    if !apart.is_empty() {
+        let _ = writeln!(
+            out,
+            "{} requirement(s) declared only by files every_file_traced leaves out:",
+            apart.len()
+        );
+        for (id, files) in &apart {
+            let status = statuses.get(*id).map_or("unknown", |status| status.name());
+            let _ = writeln!(out, "{id:<16} {status:<10} {}", files.join(", "));
+        }
     }
     if !silent.is_empty() {
         let _ = writeln!(

@@ -42,11 +42,28 @@ artifacts = "logs"                          # where a run's files on hardware si
 boards = "firmware"                         # one firmware crate per board
 retired = ["archive"]                       # no active procedure may point in here
 critical_metadata = "reqtool"               # [package.metadata.<this>] critical = true
-every_file_traced = false                   # every file owes tracing, with no marker
+every_file_traced = true                    # every file owes tracing, with no marker
+every_file_traced_except = ["hil"]          # what it leaves out, by path prefix
 test_features = [["chip-a"], ["chip-b"]]    # host tests, per feature set
 reviews = "requirements/reviews"            # the default, beside requirements
 maintainers = ["a-maintainer"]              # who may review a diff analysis
 ```
+
+`every_file_traced` makes every source file safety-critical, for a project with
+no per-file notion of it. `every_file_traced_except` leaves paths out of that,
+such as bench crates beside a library. Each entry is a path prefix relative to
+the repository, matched by whole components. A file is left out only when the
+real file, links resolved, sits inside the repository under an entry, and so
+does every package whose module tree reaches it: a file the library compiles in
+through `#[path]` stays traced wherever it sits. A file left out is
+safety-critical only if its module doc says so, and then every rule applies to
+it. Leaving a file out changes only whether the tracing rules and `report` count
+it as safety-critical, never what evidence covers or any status; `report` lists
+apart the requirements that only left-out files it compiles in declare. Every
+command refuses an entry that is empty, absolute, a pattern, uses `\`, has an
+empty, `.` or `..` component, repeats another or overlaps it, or leaves out no
+source file, and the list without `every_file_traced`. `validate` and `check`
+state what each entry leaves out.
 
 ## Commands
 
