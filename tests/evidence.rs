@@ -281,6 +281,40 @@ fn board_evidence_follows_its_declaring_files_not_the_image() {
 }
 
 #[test]
+fn every_declaring_file_needs_a_board_run_or_test_that_covers_it() {
+    use reqtool::status::Evidence;
+    let repo = repository();
+    let path = repo.path();
+    // beta, which the board does not compile, also declares INPUT-001: as a
+    // second IP version, or another chip's glue, would.
+    let file = path.join("crates/beta/src/lib.rs");
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, format!("//! Requirements: INPUT-001\n{text}")).unwrap();
+    git(path, &["add", "-A"]);
+    git(path, &["commit", "-qm", "beta declares INPUT-001"]);
+    record(
+        path,
+        &request(
+            Method::Procedure(BENCH.into()),
+            Some("demo-board"),
+            Outcome::Pass,
+        ),
+        1,
+    );
+    let (project, recorded) = recorded(path);
+    let requirement = &project.requirements["INPUT-001"];
+    assert_eq!(
+        recorded.entry(requirement, 1),
+        Status::Unverified,
+        "one board passed, but nothing ever covered beta"
+    );
+    assert_eq!(
+        recorded.owed_board_files(requirement),
+        ["crates/beta/src/lib.rs"]
+    );
+}
+
+#[test]
 fn board_evidence_goes_when_a_declaring_part_changes() {
     let repo = repository();
     let path = repo.path();

@@ -194,6 +194,14 @@ fn detail(
     if !owed.is_empty() {
         let _ = writeln!(out, "  no passing test exercises: {}", owed.join(", "));
     }
+    let owed_board = evidence.owed_board_files(requirement);
+    if !owed_board.is_empty() {
+        let _ = writeln!(
+            out,
+            "  no counting board run or test covers: {}",
+            owed_board.join(", ")
+        );
+    }
     let target_only = evidence.target_only_files(requirement);
     if !target_only.is_empty() {
         let _ = writeln!(out, "  judged on target only: {}", target_only.join(", "));

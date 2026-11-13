@@ -541,22 +541,32 @@ fn read(file: &Path) -> Result<(String, Vec<String>, bool), String> {
     Ok((identity, requirements, critical))
 }
 
-/// `//! Requirements: A, B` lines and a `//! Safety-critical.` line.
+/// `//! Requirements: A, B` lines and a `//! Safety-critical.` line. A list
+/// that ends in a comma continues on the next `//!` line, so a long trailer
+/// can wrap without dropping what follows the break.
 pub fn declarations(text: &str) -> (Vec<String>, bool) {
     let mut requirements = Vec::new();
     let mut critical = false;
+    let mut continuing = false;
     for line in text.lines() {
         let Some(doc) = line.trim_start().strip_prefix("//!") else {
+            continuing = false;
             continue;
         };
         let doc = doc.trim();
-        if let Some(list) = doc.strip_prefix(REQUIREMENTS_LINE) {
+        let list = match doc.strip_prefix(REQUIREMENTS_LINE) {
+            Some(list) => Some(list),
+            None if continuing => Some(doc),
+            None => None,
+        };
+        if let Some(list) = list {
             requirements.extend(
                 list.split(',')
                     .map(str::trim)
                     .filter(|id| !id.is_empty())
                     .map(str::to_owned),
             );
+            continuing = list.trim_end().ends_with(',');
         } else if doc == CRITICAL_LINE {
             critical = true;
         }
@@ -660,6 +670,16 @@ mod tests {
             (vec!["INPUT-001".to_owned(), "INPUT-002".to_owned()], true)
         );
         assert_eq!(declarations("fn f() {}"), (Vec::new(), false));
+    }
+
+    #[test]
+    fn a_trailer_ending_in_a_comma_continues_on_the_next_line() {
+        let text = "//! Requirements: A-001, B-002,\n//! C-003\n//!\n//! D-004\n";
+        assert_eq!(
+            declarations(text).0,
+            ["A-001", "B-002", "C-003"],
+            "the list ends where a line does not end in a comma"
+        );
     }
 
     #[test]

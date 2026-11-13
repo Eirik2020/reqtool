@@ -11,8 +11,9 @@ computed from it, never written.
   pass verifies the car. A part replaced by one that fulfils the same requirements
   owes only its own evidence, so wheels can change without reverifying the car.
   Changing what a requirement sets on the layers below re-owes that requirement.
-- **A file is the unit.** It states its requirements and is hashed, ignoring
-  whitespace and comments. Evidence records the hash, and a mismatch flags it.
+- **A file is the unit.** It states its requirements (`//! Requirements: A-001,
+  B-002`, a line ending in a comma continuing on the next `//!` line) and is
+  hashed, ignoring whitespace and comments. Evidence records the hash, and a mismatch flags it.
 - **Dependencies are pinned.** Bumping one flags the files importing it until a
   maintainer has reviewed a diff analysis, or they are reverified. Contributors may
   do the analysis ([Reviewed bumps](#reviewed-bumps)).
@@ -170,6 +171,11 @@ and a procedure's own section.
   profile or a rebuilt binary leave it standing, so a UART verified on a bench
   keeps its evidence when an LED driver joins the board. A run that compiled in
   no declaring file stands while every file it compiled in is unchanged.
+- **Every declaring file needs covering.** A requirement's board entries stand
+  only while each file declaring it is covered by a counting pass: a host test
+  that exercised it, or a board run that compiled it in. A file only another
+  chip compiles (a second IP version, another chip's glue) owes its own run,
+  and `check` names it until one passes.
 
 Records are JSON, schema 4, in the project's evidence directory: one
 record per session, each result naming its own method. Schema 4 records

@@ -44,6 +44,13 @@ pub trait Evidence {
         Vec::new()
     }
 
+    /// Files declaring this requirement that neither a counting host test
+    /// exercised nor a counting board run compiled in: its board entries
+    /// cannot stand while one is left.
+    fn owed_board_files(&self, _requirement: &Requirement) -> Vec<String> {
+        Vec::new()
+    }
+
     /// Files declaring this requirement that no host test can reach, so only
     /// target-level evidence can judge them.
     fn target_only_files(&self, _requirement: &Requirement) -> Vec<String> {
