@@ -447,6 +447,7 @@ pub struct Recorded {
     statuses: BTreeMap<(String, usize), Status>,
     boards: BTreeMap<(String, usize), Vec<(String, Status)>>,
     owed_files: BTreeMap<String, Vec<String>>,
+    owed_board_files: BTreeMap<String, Vec<String>>,
     target_only_files: BTreeMap<String, Vec<String>>,
     on_review: BTreeMap<(String, usize), Bridges>,
 }
@@ -482,6 +483,7 @@ impl Recorded {
         let mut statuses = BTreeMap::new();
         let mut boards = BTreeMap::new();
         let mut owed_files = BTreeMap::new();
+        let mut owed_board_files = BTreeMap::new();
         let mut target_only_files = BTreeMap::new();
         let mut on_review: BTreeMap<(String, usize), Bridges> = BTreeMap::new();
         let host_files = current.configurations.host_files()?;
@@ -498,6 +500,11 @@ impl Recorded {
             let mut exercised: BTreeSet<&str> = BTreeSet::new();
             let mut ever_exercised: BTreeSet<&str> = BTreeSet::new();
             let mut host_entries = Vec::new();
+            // Board coverage, as host coverage: the declaring files a board
+            // pass compiled in, counting now or ever.
+            let mut board_entries = Vec::new();
+            let mut board_covered: BTreeSet<&str> = BTreeSet::new();
+            let mut board_ever: BTreeSet<&str> = BTreeSet::new();
             for (index, entry) in requirement.verification.entries.iter().enumerate() {
                 let key = (requirement.id.clone(), index);
                 // Nothing runs here: it stands or falls with the library's own.
@@ -573,6 +580,17 @@ impl Recorded {
                         .iter()
                         .filter(|(record, _)| record.board.as_deref() == Some(board))
                     {
+                        let compiled_in: Vec<&str> = record
+                            .configuration
+                            .as_ref()
+                            .map(|ran| {
+                                all_declaring
+                                    .iter()
+                                    .copied()
+                                    .filter(|file| ran.files.contains_key(*file))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
                         let counts = result.claim == claim
                             && match &record.configuration {
                                 None => false,
@@ -597,6 +615,12 @@ impl Recorded {
                                     }
                                 }
                             };
+                        if result.result == Outcome::Pass {
+                            board_ever.extend(compiled_in.iter().copied());
+                            if counts {
+                                board_covered.extend(compiled_in.iter().copied());
+                            }
+                        }
                         judged.push((counts, result.result));
                     }
                     per_board.push((board.to_owned(), entry_status(judged.into_iter())));
@@ -607,7 +631,41 @@ impl Recorded {
                     .max()
                     .unwrap_or(Status::Unverified);
                 statuses.insert(key.clone(), overall);
-                boards.insert(key, per_board);
+                boards.insert(key.clone(), per_board);
+                board_entries.push(key);
+            }
+            // Every declaring file needs a counting pass that covers it: a host
+            // test that exercised it, or a board run that compiled it in. A
+            // file only another chip compiles, an IP version or a chip's own
+            // glue, is otherwise left unproven though one board passed.
+            if !board_entries.is_empty() {
+                let owed: Vec<&str> = declaring
+                    .iter()
+                    .copied()
+                    .filter(|file| !board_covered.contains(file) && !exercised.contains(file))
+                    .collect();
+                if !owed.is_empty() {
+                    let fallen = if owed
+                        .iter()
+                        .all(|file| board_ever.contains(file) || ever_exercised.contains(file))
+                    {
+                        Status::Stale
+                    } else {
+                        Status::Unverified
+                    };
+                    for key in &board_entries {
+                        if let Some(status) = statuses
+                            .get_mut(key)
+                            .filter(|status| **status == Status::Verified)
+                        {
+                            *status = fallen;
+                        }
+                    }
+                    owed_board_files.insert(
+                        requirement.id.clone(),
+                        owed.into_iter().map(str::to_owned).collect(),
+                    );
+                }
             }
             let (reachable, target_only): (Vec<&str>, Vec<&str>) = declaring
                 .iter()
@@ -647,6 +705,7 @@ impl Recorded {
             statuses,
             boards,
             owed_files,
+            owed_board_files,
             target_only_files,
             on_review,
         })
@@ -670,6 +729,13 @@ impl Evidence for Recorded {
 
     fn owed_files(&self, requirement: &Requirement) -> Vec<String> {
         self.owed_files
+            .get(&requirement.id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    fn owed_board_files(&self, requirement: &Requirement) -> Vec<String> {
+        self.owed_board_files
             .get(&requirement.id)
             .cloned()
             .unwrap_or_default()
