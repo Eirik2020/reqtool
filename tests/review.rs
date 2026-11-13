@@ -440,8 +440,8 @@ fn a_changed_file_or_claim_stays_stale_under_a_review() {
     );
     assert_eq!(status(path), [Status::Stale, Status::Stale]);
 
-    // A board's own build input changing is a difference the review does not
-    // cover, though the board's declaring files are unchanged.
+    // A board's own build input changing changes the image, not the files
+    // under test: with the declaring files unchanged, the board result stands.
     let repo = project();
     let path = repo.path();
     record(path, Outcome::Pass, 1);
@@ -453,7 +453,7 @@ fn a_changed_file_or_claim_stays_stale_under_a_review() {
         "[workspace]",
         "[profile.dev]\nopt-level = 1\n\n[workspace]",
     );
-    assert_eq!(status(path), [Status::Verified, Status::Stale]);
+    assert_eq!(status(path), [Status::Verified, Status::Verified]);
 
     // Another crate moving as well is a difference the review does not cover.
     let repo = project();

@@ -14,8 +14,10 @@
 //!   except those a build script sets, such as the git revision;
 //! - the version of every external crate compiled in.
 //!
-//! A part's content is not in the identity: evidence names the requirements a
-//! run covered, and stands while the files declaring them are unchanged. The
+//! The identity only tells one board's records apart (a repeat at the same
+//! identity adds nothing); status never compares it. A part's content is not
+//! in it: evidence names the requirements a run covered, and stands while the
+//! files declaring them are unchanged, whatever else the image holds. The
 //! compiler is deliberately left out: differences between compiler versions are
 //! negligible outside safety assurance, which this project does not claim.
 

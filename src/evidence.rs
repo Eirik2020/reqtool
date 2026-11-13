@@ -7,13 +7,17 @@
 //! the claim it proved. Host evidence names the modules it exercised (the
 //! test's file and the files it imports directly), each with its direct
 //! imports, and the record holds the identity of every one of those. Board
-//! evidence carries the whole configuration it ran in.
+//! evidence carries the configuration it ran in: which files were compiled
+//! in, and each one's identity.
 //!
 //! A host result counts for a module while the claim, the module and the
 //! versions of the external crates it imports are as recorded; another local
-//! file is a part with its own evidence. A board result counts while its
-//! configuration's identity is the one recorded and the files declaring its
-//! requirement are unchanged. The compiler is not part of any of this. Records of
+//! file is a part with its own evidence. A board result counts while the
+//! files declaring its requirement that the run compiled in are unchanged,
+//! with the external crates they import at the versions it ran with: the
+//! image and the rest of the car are not part of it, so a file added beside
+//! them or another run's code changing leaves it standing. The compiler is
+//! not part of any of this. Records of
 //! other schemas are left beside these untouched, and not read.
 //!
 //! A reviewed diff analysis ([`crate::review`]) lets a result recorded with an
@@ -348,44 +352,78 @@ impl Current<'_> {
     }
 }
 
+impl Current<'_> {
+    /// Whether the parts a board run covered are unchanged, and the steps that
+    /// stood on reviews: every file declaring the requirement that the run
+    /// compiled in has the identity it had, and every external crate such a
+    /// file imports is at the version it ran with, or a reviewed bump of it.
+    /// The image and everything else compiled beside those files is not part
+    /// of it: a file added to the board, another run's code or a rebuild
+    /// leaves the result standing. A run that compiled in no declaring file
+    /// covered the board as a whole, so it stands while every file it
+    /// compiled in is unchanged.
+    fn board_parts_unchanged(
+        &self,
+        board: &str,
+        ran: &Configuration,
+        declaring: &[&str],
+        scope: Option<&Configuration>,
+        reviews: Option<&Reviews>,
+    ) -> Result<Option<Bridges>, String> {
+        let compiled_in: Vec<&str> = declaring
+            .iter()
+            .copied()
+            .filter(|file| ran.files.contains_key(*file))
+            .collect();
+        if compiled_in.is_empty() {
+            let now: Rc<Configuration> = match scope {
+                Some(configuration) => Rc::new(configuration.clone()),
+                None => self.configurations.configuration(board, &ran.features)?,
+            };
+            return Ok((ran.files == now.files).then(Bridges::new));
+        }
+        let mut recorded = Vec::new();
+        let mut now = Vec::new();
+        for file in compiled_in {
+            let identity = match scope {
+                Some(configuration) => configuration.files.get(file).cloned(),
+                None => self.trace.identity(file),
+            };
+            if identity.as_ref() != ran.files.get(file) {
+                return Ok(None);
+            }
+            for key in self.trace.imports(file) {
+                let Some(external) = key.strip_prefix("extern:") else {
+                    continue;
+                };
+                let (package, version) = external.rsplit_once('@').unwrap_or((external, ""));
+                // A crate the run did not compile in, such as one behind a
+                // feature it left off, was not part of what it proved.
+                let Some(ran_versions) = ran.externals.get(package) else {
+                    continue;
+                };
+                let ran_versions: Vec<&str> = ran_versions.split(", ").collect();
+                if ran_versions.contains(&version) {
+                    continue;
+                }
+                match ran_versions.as_slice() {
+                    [old] => {
+                        recorded.push(((*package).to_owned(), (*old).to_owned()));
+                        now.push(((*package).to_owned(), version.to_owned()));
+                    }
+                    _ => return Ok(None),
+                }
+            }
+        }
+        Ok(review::pair(&borrowed(&recorded), &borrowed(&now), reviews))
+    }
+}
+
 fn borrowed(pairs: &[(String, String)]) -> Vec<(&str, &str)> {
     pairs
         .iter()
         .map(|(package, version)| (package.as_str(), version.as_str()))
         .collect()
-}
-
-/// Whether a board run's configuration is the one now, as a car: the same
-/// identity, or, with `reviews`, the same once the external crate versions
-/// they carry forward are taken as moved. The steps it stood on, or `None`.
-fn same_configuration(
-    ran: &Configuration,
-    now: &Configuration,
-    reviews: Option<&Reviews>,
-) -> Option<Bridges> {
-    if ran.identity() == now.identity() {
-        return Some(Bridges::new());
-    }
-    let versions = |configuration: &Configuration| -> Vec<(String, String)> {
-        configuration
-            .externals
-            .iter()
-            .flat_map(|(package, versions)| {
-                versions
-                    .split(", ")
-                    .filter(|version| !version.is_empty())
-                    .map(move |version| (package.clone(), version.to_owned()))
-            })
-            .collect()
-    };
-    let bridges = review::pair(
-        &borrowed(&versions(ran)),
-        &borrowed(&versions(now)),
-        reviews,
-    )?;
-    let mut as_if = ran.clone();
-    as_if.externals.clone_from(&now.externals);
-    (as_if.identity() == now.identity()).then_some(bridges)
 }
 
 /// Statuses from the records and the current code.
@@ -539,16 +577,14 @@ impl Recorded {
                             && match &record.configuration {
                                 None => false,
                                 Some(ran) => {
-                                    let now: Rc<Configuration> = match scope {
-                                        Some(configuration) => Rc::new(configuration.clone()),
-                                        None => current
-                                            .configurations
-                                            .configuration(board, &ran.features)?,
-                                    };
-                                    match same_configuration(ran, &now, reviews) {
-                                        Some(bridges)
-                                            if covered_unchanged(ran, &now, &all_declaring) =>
-                                        {
+                                    match current.board_parts_unchanged(
+                                        board,
+                                        ran,
+                                        &all_declaring,
+                                        scope,
+                                        reviews,
+                                    )? {
+                                        Some(bridges) => {
                                             if !bridges.is_empty() {
                                                 on_review
                                                     .entry(key.clone())
@@ -557,7 +593,7 @@ impl Recorded {
                                             }
                                             true
                                         }
-                                        _ => false,
+                                        None => false,
                                     }
                                 }
                             };
@@ -614,23 +650,6 @@ impl Recorded {
             target_only_files,
             on_review,
         })
-    }
-}
-
-/// Whether the parts a board run covered are unchanged: the files declaring its
-/// requirement that the configuration compiles in, or, with none, all of them.
-fn covered_unchanged(ran: &Configuration, now: &Configuration, declaring: &[&str]) -> bool {
-    let compiled_in: Vec<&str> = declaring
-        .iter()
-        .copied()
-        .filter(|file| ran.files.contains_key(*file))
-        .collect();
-    if compiled_in.is_empty() {
-        ran.files == now.files
-    } else {
-        compiled_in
-            .iter()
-            .all(|file| ran.files.get(*file) == now.files.get(*file))
     }
 }
 
