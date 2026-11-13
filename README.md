@@ -114,8 +114,9 @@ cargo run --release -- review --crate my-hal --from 0.1.0 --to 0.1.1 \
   `features`, ...), `conditions` (any `name: state`, plus `equipment` and
   `environment`), `commands`, `artifacts` (paths under the artifact directory;
   `reqtool` hashes them), `measurements`, `observations`, `limitations` and
-  `stop_conditions_triggered`. Evidence on hardware must have it, with the
-  image's SHA-256. An entry with a hazard must be run by a person who confirms
+  `stop_conditions_triggered`. Evidence on hardware must have it, with
+  `execution`; the image (`candidate`) is optional, and its SHA-256 only
+  checked for form when given. An entry with a hazard must be run by a person who confirms
   it. A pass needs each of its entry's preconditions stated as held, and may not
   include a triggered stop condition.
 
@@ -159,13 +160,16 @@ and a procedure's own section.
   no test ever reached it. A file that build does not compile, such as a task
   definition, is judged by target-level evidence alone. `check` names both kinds
   of file. The compiler is not part of evidence.
-- **Board evidence** carries the configuration it ran in. Its identity says which
-  car this is: which repository files `cargo check` reports compiled in (dep-info
-  and build-script reruns), by path; the content of the app's own source and of
-  every file that is not Rust source, including the manifest and
-  `.cargo/config.toml`; external crate versions; and compiler-read environment
-  variables other than those a build script sets. It counts while that identity
-  is the one recorded and the files declaring its requirement are unchanged.
+- **Board evidence follows files, not images.** A board record carries the
+  configuration it ran in: which repository files `cargo check` reports compiled
+  in, each with its identity, and the external crate versions. A board result
+  counts while every file declaring its requirement that the run compiled in is
+  unchanged, and every external crate such a file imports is at the version it
+  ran with (or a reviewed bump of it). Nothing else in the image is part of it:
+  a file added beside them, the bench's own code, another run's code, the build
+  profile or a rebuilt binary leave it standing, so a UART verified on a bench
+  keeps its evidence when an LED driver joins the board. A run that compiled in
+  no declaring file stands while every file it compiled in is unchanged.
 
 Records are JSON, schema 4, in the project's evidence directory: one
 record per session, each result naming its own method. Schema 4 records

@@ -218,25 +218,22 @@ pub fn check(results: &[RunResult], details: Option<&Details>) -> Result<(), Str
     if on_hardware.is_empty() {
         return Ok(());
     }
-    let details = details.ok_or("evidence on hardware needs details: execution and candidate")?;
+    let details = details.ok_or("evidence on hardware needs details: execution")?;
     let execution = details
         .execution
         .as_ref()
         .ok_or("evidence on hardware needs execution")?;
-    let candidate = details
-        .candidate
-        .as_ref()
-        .ok_or("evidence on hardware needs the candidate image")?;
-    let sha = &candidate.firmware_sha256;
-    if sha.len() != 64
-        || !sha
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    {
-        return Err(
-            "evidence on hardware needs the firmware image's SHA-256 (64 lowercase hex digits)"
-                .into(),
-        );
+    // Evidence follows files, not images: the image is optional, and only
+    // checked for form when given.
+    if let Some(candidate) = details.candidate.as_ref() {
+        let sha = &candidate.firmware_sha256;
+        if sha.len() != 64
+            || !sha
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err("a candidate image's SHA-256 is 64 lowercase hex digits".into());
+        }
     }
     for result in on_hardware {
         if result.hazard != Hazard::None {

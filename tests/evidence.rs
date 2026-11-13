@@ -234,7 +234,7 @@ fn changing_what_a_requirement_sets_below_re_owes_it() {
 }
 
 #[test]
-fn board_evidence_follows_the_configuration_and_its_own_parts() {
+fn board_evidence_follows_its_declaring_files_not_the_image() {
     let repo = repository();
     let path = repo.path();
     let bench = request(
@@ -253,7 +253,7 @@ fn board_evidence_follows_the_configuration_and_its_own_parts() {
     assert_eq!(
         entry_status(path, "INPUT-001", 1),
         Status::Verified,
-        "another part changed, in the same car"
+        "another part changed, beside the declaring files"
     );
     edit(
         path,
@@ -263,8 +263,20 @@ fn board_evidence_follows_the_configuration_and_its_own_parts() {
     );
     assert_eq!(
         entry_status(path, "INPUT-001", 1),
-        Status::Stale,
-        "the app that assembles the parts changed"
+        Status::Verified,
+        "the bench's own code changed, not the code under test"
+    );
+    std::fs::write(path.join("crates/alpha/src/led.rs"), "pub fn on() {}\n").unwrap();
+    edit(
+        path,
+        "crates/alpha/src/lib.rs",
+        "pub mod input;",
+        "pub mod input;\npub mod led;",
+    );
+    assert_eq!(
+        entry_status(path, "INPUT-001", 1),
+        Status::Verified,
+        "a file added to the image leaves the declaring files as they were"
     );
 }
 
@@ -549,8 +561,8 @@ fn target_evidence_belongs_to_a_board() {
     );
     assert_eq!(
         entry_status(path, "INPUT-001", 1),
-        Status::Stale,
-        "the board's app is in its configuration"
+        Status::Verified,
+        "the board's app is not the code under test"
     );
     assert_eq!(entry_status(path, "INPUT-001", 0), Status::Unverified);
 }
