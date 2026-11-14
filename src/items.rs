@@ -107,6 +107,26 @@ impl<'a> Resolver<'a> {
     }
 
     pub fn resolve(&self, path: &str) -> Result<Resolved, String> {
+        let (root, segments) = self.start(path)?;
+        let found = self
+            .walk(Found::Module(root), &segments[1..], 0)
+            .map_err(|e| format!("{path}: {e}"))?;
+        Ok(Self::resolved(found))
+    }
+
+    /// Every resolution of `path`, one per `#[cfg]` alternative that holds
+    /// it: a module chosen per chip or platform gives a test one file per
+    /// alternative, and a host run that builds each alternative exercises
+    /// them all. A path through no alternatives resolves once.
+    pub fn resolve_every(&self, path: &str) -> Result<Vec<Resolved>, String> {
+        let (root, segments) = self.start(path)?;
+        let found = self
+            .walk_every(Found::Module(root), &segments[1..], 0)
+            .map_err(|e| format!("{path}: {e}"))?;
+        Ok(found.into_iter().map(Self::resolved).collect())
+    }
+
+    fn start(&self, path: &str) -> Result<(Module, Vec<String>), String> {
         let segments: Vec<String> = path.split("::").map(str::to_owned).collect();
         if segments.iter().any(String::is_empty) {
             return Err(format!("{path}: malformed path"));
@@ -114,10 +134,50 @@ impl<'a> Resolver<'a> {
         let root = self
             .crate_root(&segments[0])
             .ok_or_else(|| format!("{path}: no crate {} in the workspace", segments[0]))?;
-        let found = self
-            .walk(Found::Module(root), &segments[1..], 0)
-            .map_err(|e| format!("{path}: {e}"))?;
-        Ok(match found {
+        Ok((root, segments))
+    }
+
+    /// As `walk`, but through every alternative that holds the rest of the
+    /// path instead of the first.
+    fn walk_every(
+        &self,
+        current: Found,
+        segments: &[String],
+        depth: usize,
+    ) -> Result<Vec<Found>, String> {
+        let mut current = current;
+        for (index, segment) in segments.iter().enumerate() {
+            let Found::Module(module) = current else {
+                return self
+                    .walk(current, &segments[index..], depth)
+                    .map(|found| vec![found]);
+            };
+            let alternatives = self.alternatives(&module, segment);
+            if alternatives.len() > 1 {
+                let mut every = Vec::new();
+                let mut problem = None;
+                for alternative in alternatives {
+                    let found = self.child(&module, alternative).and_then(|child| {
+                        self.walk_every(Found::Module(child), &segments[index + 1..], depth)
+                    });
+                    match found {
+                        Ok(found) => every.extend(found),
+                        Err(why) => problem = problem.or(Some(why)),
+                    }
+                }
+                return if every.is_empty() {
+                    Err(problem.unwrap_or_else(|| "no alternative".to_owned()))
+                } else {
+                    Ok(every)
+                };
+            }
+            current = self.lookup(&module, segment, depth)?;
+        }
+        Ok(vec![current])
+    }
+
+    fn resolved(found: Found) -> Resolved {
+        match found {
             Found::Module(module) => Resolved {
                 canonical: qualified(&module.crate_name, &module.path),
                 crate_name: module.crate_name,
@@ -136,7 +196,7 @@ impl<'a> Resolver<'a> {
                 kind,
                 file,
             },
-        })
+        }
     }
 
     pub(crate) fn crate_root(&self, name: &str) -> Option<Module> {
