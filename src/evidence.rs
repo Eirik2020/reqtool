@@ -273,29 +273,39 @@ impl Current<'_> {
         identity::claim(&self.project.repository, requirement, &sets, entry)
     }
 
-    /// The file a test is defined in.
-    fn test_file(&self, path: &str) -> Result<String, String> {
-        let resolved = Resolver::new(&self.project.workspace.crates).resolve(path)?;
-        self.trace
-            .locate(&self.project.repository, &resolved.file)
-            .ok_or_else(|| format!("{path}: its file is in no module tree"))
+    /// The files a test is defined in: one per `#[cfg]` alternative that
+    /// holds it, since the host run builds every feature set.
+    fn test_files(&self, path: &str) -> Result<Vec<String>, String> {
+        Resolver::new(&self.project.workspace.crates)
+            .resolve_every(path)?
+            .into_iter()
+            .map(|resolved| {
+                self.trace
+                    .locate(&self.project.repository, &resolved.file)
+                    .ok_or_else(|| format!("{path}: its file is in no module tree"))
+            })
+            .collect()
     }
 
     /// The modules a host run of this entry exercises.
     fn exercised(&self, requirement: &Requirement, entry: &Entry) -> Result<Vec<String>, String> {
         Ok(match &entry.method {
             Method::Test(path) => {
-                let file = self.test_file(path)?;
-                let mut modules = vec![file.clone()];
-                if let Some(source) = self.trace.files.get(&file) {
-                    modules.extend(
-                        source
-                            .imports
-                            .iter()
-                            .filter(|(_, import)| **import == Import::File)
-                            .map(|(key, _)| key.clone()),
-                    );
+                let mut modules = Vec::new();
+                for file in self.test_files(path)? {
+                    if let Some(source) = self.trace.files.get(&file) {
+                        modules.extend(
+                            source
+                                .imports
+                                .iter()
+                                .filter(|(_, import)| **import == Import::File)
+                                .map(|(key, _)| key.clone()),
+                        );
+                    }
+                    modules.push(file);
                 }
+                modules.sort();
+                modules.dedup();
                 modules
             }
             Method::Procedure(_) => self

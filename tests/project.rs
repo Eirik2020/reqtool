@@ -215,6 +215,62 @@ fn a_test_resolves_in_whichever_cfg_alternative_holds_it() {
 }
 
 #[test]
+fn a_test_in_every_cfg_alternative_exercises_every_alternative() {
+    // FerroHAL's chip module is one file per chip; a test it defines in
+    // each runs once per feature set, so its evidence covers every file
+    // (measured 2026-11-15: a record listing one chip's files left the
+    // others' requirements stale and could not be redone).
+    let yaml = VALID_ONE.replace(
+        "alpha::input::tests::rejects_stale",
+        "alpha::chip::tests::in_both",
+    );
+    let copy = with_requirements(&yaml);
+    let source = copy.path().join("crates/alpha/src");
+    std::fs::create_dir_all(source.join("chips")).unwrap();
+    for (file, extra) in [
+        ("first.rs", ""),
+        ("second.rs", "    #[test]\n    fn only_second() {}\n"),
+    ] {
+        std::fs::write(
+            source.join("chips").join(file),
+            format!("#[cfg(test)]\nmod tests {{\n    #[test]\n    fn in_both() {{}}\n{extra}}}\n"),
+        )
+        .unwrap();
+    }
+    let root = source.join("lib.rs");
+    let mut text = std::fs::read_to_string(&root).unwrap();
+    text.push_str(
+        "#[cfg(feature = \"first\")]\n#[path = \"chips/first.rs\"]\npub mod chip;\n\
+         #[cfg(feature = \"second\")]\n#[path = \"chips/second.rs\"]\npub mod chip;\n",
+    );
+    std::fs::write(&root, text).unwrap();
+    let (project, _) = Project::load(copy.path()).unwrap();
+    let resolver = reqtool::items::Resolver::new(&project.workspace.crates);
+    let files = |path: &str| -> Vec<String> {
+        let mut files: Vec<String> = resolver
+            .resolve_every(path)
+            .unwrap()
+            .into_iter()
+            .map(|resolved| {
+                resolved
+                    .file
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        files.sort();
+        files
+    };
+    assert_eq!(
+        files("alpha::chip::tests::in_both"),
+        ["first.rs", "second.rs"]
+    );
+    assert_eq!(files("alpha::chip::tests::only_second"), ["second.rs"]);
+}
+
+#[test]
 fn a_valid_single_requirement_has_no_problems() {
     assert_eq!(problems(VALID_ONE), Vec::<String>::new());
 }
