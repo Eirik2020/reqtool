@@ -59,6 +59,24 @@ pub(crate) struct Module {
     pub(crate) file: PathBuf,
     directory: PathBuf,
     pub(crate) items: Rc<Vec<Item>>,
+    /// The module this one was reached through: `super`. Not re-resolved by
+    /// path, which would take the first `#[cfg]` alternative of a parent
+    /// chosen per chip.
+    parent: Option<Rc<Module>>,
+}
+
+impl Module {
+    /// The files of this module and its ancestors: what tells apart one file
+    /// mounted under two parents, whose `super` differ.
+    fn lineage(&self) -> Vec<PathBuf> {
+        let mut files = vec![self.file.clone()];
+        let mut next = self.parent.as_deref();
+        while let Some(module) = next {
+            files.push(module.file.clone());
+            next = module.parent.as_deref();
+        }
+        files
+    }
 }
 
 /// What the longest resolvable prefix of a path reached.
@@ -88,7 +106,9 @@ enum Found {
 }
 
 /// A module's identity for caching: its file and path.
-type ModuleKey = (PathBuf, Vec<String>);
+/// A module by its file, its path and its ancestors' files: one file
+/// mounted under two parents resolves `super` differently.
+type ModuleKey = (Vec<PathBuf>, Vec<String>);
 
 pub struct Resolver<'a> {
     crates: &'a BTreeMap<String, Crate>,
@@ -214,6 +234,7 @@ impl<'a> Resolver<'a> {
             file: file.to_path_buf(),
             directory: file.parent().unwrap_or(Path::new(".")).to_path_buf(),
             items: self.parse(file)?,
+            parent: None,
         })
     }
 
@@ -365,7 +386,7 @@ impl<'a> Resolver<'a> {
     /// Finds `name` in a module: an item, a `use` that brings it in, or an
     /// item reached through a glob import.
     fn lookup(&self, module: &Module, name: &str, depth: usize) -> Result<Found, String> {
-        let key = ((module.file.clone(), module.path.clone()), name.to_owned());
+        let key = ((module.lineage(), module.path.clone()), name.to_owned());
         if let Some(found) = self.lookups.borrow().get(&key) {
             return found.clone();
         }
@@ -465,6 +486,7 @@ impl<'a> Resolver<'a> {
                 file: parent.file.clone(),
                 directory,
                 items: Rc::new(items.clone()),
+                parent: Some(Rc::new(parent.clone())),
             });
         }
         let explicit = path_attribute(&declaration.attrs).map(|relative| {
@@ -492,6 +514,7 @@ impl<'a> Resolver<'a> {
             file,
             directory,
             items,
+            parent: Some(Rc::new(parent.clone())),
         })
     }
 
@@ -570,6 +593,9 @@ impl<'a> Resolver<'a> {
     }
 
     fn parent(&self, module: &Module) -> Result<Module, String> {
+        if let Some(parent) = &module.parent {
+            return Ok((**parent).clone());
+        }
         let Some((_, ancestors)) = module.path.split_last() else {
             return Err("super:: at a crate root".to_owned());
         };
