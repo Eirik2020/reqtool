@@ -242,19 +242,18 @@ impl Builder<'_> {
             out.insert(external.0, Import::External { pinned: external.1 });
             return;
         }
-        let Some(reached) = self.resolver.reach(module, path) else {
-            return;
-        };
-        self.add_file(&reached.file, out);
-        if matches!(reached.kind, Some(Kind::Type | Kind::Trait)) {
-            for crate_name in [reached.crate_name.as_str(), module.crate_name.as_str()] {
-                let files = self
-                    .implementations(crate_name)
-                    .get(&reached.name)
-                    .cloned()
-                    .unwrap_or_default();
-                for file in files {
-                    self.add_file(&file, out);
+        for reached in self.resolver.reach_every(module, path) {
+            self.add_file(&reached.file, out);
+            if matches!(reached.kind, Some(Kind::Type | Kind::Trait)) {
+                for crate_name in [reached.crate_name.as_str(), module.crate_name.as_str()] {
+                    let files = self
+                        .implementations(crate_name)
+                        .get(&reached.name)
+                        .cloned()
+                        .unwrap_or_default();
+                    for file in files {
+                        self.add_file(&file, out);
+                    }
                 }
             }
         }
@@ -276,9 +275,20 @@ impl Builder<'_> {
             out.insert(external.0, Import::External { pinned: external.1 });
             return;
         }
-        let Some(reached) = self.resolver.reach(module, path) else {
-            return;
-        };
+        for reached in self.resolver.reach_every(module, path) {
+            self.glob_from(package, reached, depth, out);
+        }
+    }
+
+    /// One alternative of a glob import: its file, and what its `pub use`
+    /// declarations re-export.
+    fn glob_from(
+        &mut self,
+        package: &Crate,
+        reached: items::Reached,
+        depth: usize,
+        out: &mut BTreeMap<String, Import>,
+    ) {
         self.add_file(&reached.file, out);
         let Some(target) = reached.module else {
             return;

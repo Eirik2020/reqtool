@@ -59,6 +59,24 @@ pub(crate) struct Module {
     pub(crate) file: PathBuf,
     directory: PathBuf,
     pub(crate) items: Rc<Vec<Item>>,
+    /// The module this one was reached through: `super`. Not re-resolved by
+    /// path, which would take the first `#[cfg]` alternative of a parent
+    /// chosen per chip.
+    parent: Option<Rc<Module>>,
+}
+
+impl Module {
+    /// The files of this module and its ancestors: what tells apart one file
+    /// mounted under two parents, whose `super` differ.
+    fn lineage(&self) -> Vec<PathBuf> {
+        let mut files = vec![self.file.clone()];
+        let mut next = self.parent.as_deref();
+        while let Some(module) = next {
+            files.push(module.file.clone());
+            next = module.parent.as_deref();
+        }
+        files
+    }
 }
 
 /// What the longest resolvable prefix of a path reached.
@@ -88,7 +106,9 @@ enum Found {
 }
 
 /// A module's identity for caching: its file and path.
-type ModuleKey = (PathBuf, Vec<String>);
+/// A module by its file, its path and its ancestors' files: one file
+/// mounted under two parents resolves `super` differently.
+type ModuleKey = (Vec<PathBuf>, Vec<String>);
 
 pub struct Resolver<'a> {
     crates: &'a BTreeMap<String, Crate>,
@@ -214,6 +234,7 @@ impl<'a> Resolver<'a> {
             file: file.to_path_buf(),
             directory: file.parent().unwrap_or(Path::new(".")).to_path_buf(),
             items: self.parse(file)?,
+            parent: None,
         })
     }
 
@@ -233,32 +254,42 @@ impl<'a> Resolver<'a> {
     /// Resolves a path as written inside `module`, as far as it resolves:
     /// the longest prefix that names something, or `None` if not even the
     /// first segment does.
-    pub(crate) fn reach(&self, module: &Module, path: &[String]) -> Option<Reached> {
-        (1..=path.len()).rev().find_map(|length| {
-            let found = self.follow(module, &path[..length], 0).ok()?;
-            Some(match found {
-                Found::Module(reached) => Reached {
-                    crate_name: reached.crate_name.clone(),
-                    file: reached.file.clone(),
-                    kind: None,
-                    name: reached.path.last().cloned().unwrap_or_default(),
-                    module: Some(reached),
-                },
-                Found::Leaf {
-                    kind,
-                    file,
-                    crate_name,
-                    name,
-                    ..
-                } => Reached {
-                    crate_name,
-                    file,
-                    kind: Some(kind),
-                    name,
-                    module: None,
-                },
-            })
-        })
+    /// What `path`, written in `module`, names, as far as it resolves: the
+    /// longest prefix that names something, through every `#[cfg]`
+    /// alternative that holds it. A file importing from a module chosen per
+    /// chip or platform imports from each alternative, since every feature
+    /// set builds one of them.
+    pub(crate) fn reach_every(&self, module: &Module, path: &[String]) -> Vec<Reached> {
+        (1..=path.len())
+            .rev()
+            .find_map(|length| self.follow_every(module, &path[..length], 0).ok())
+            .map(|found| found.into_iter().map(Self::reached).collect())
+            .unwrap_or_default()
+    }
+
+    fn reached(found: Found) -> Reached {
+        match found {
+            Found::Module(reached) => Reached {
+                crate_name: reached.crate_name.clone(),
+                file: reached.file.clone(),
+                kind: None,
+                name: reached.path.last().cloned().unwrap_or_default(),
+                module: Some(reached),
+            },
+            Found::Leaf {
+                kind,
+                file,
+                crate_name,
+                name,
+                ..
+            } => Reached {
+                crate_name,
+                file,
+                kind: Some(kind),
+                name,
+                module: None,
+            },
+        }
     }
 
     pub(crate) fn parse(&self, file: &Path) -> Result<Rc<Vec<Item>>, String> {
@@ -355,7 +386,7 @@ impl<'a> Resolver<'a> {
     /// Finds `name` in a module: an item, a `use` that brings it in, or an
     /// item reached through a glob import.
     fn lookup(&self, module: &Module, name: &str, depth: usize) -> Result<Found, String> {
-        let key = ((module.file.clone(), module.path.clone()), name.to_owned());
+        let key = ((module.lineage(), module.path.clone()), name.to_owned());
         if let Some(found) = self.lookups.borrow().get(&key) {
             return found.clone();
         }
@@ -455,6 +486,7 @@ impl<'a> Resolver<'a> {
                 file: parent.file.clone(),
                 directory,
                 items: Rc::new(items.clone()),
+                parent: Some(Rc::new(parent.clone())),
             });
         }
         let explicit = path_attribute(&declaration.attrs).map(|relative| {
@@ -482,6 +514,7 @@ impl<'a> Resolver<'a> {
             file,
             directory,
             items,
+            parent: Some(Rc::new(parent.clone())),
         })
     }
 
@@ -518,7 +551,51 @@ impl<'a> Resolver<'a> {
         self.walk(Found::Module(start), rest, depth)
     }
 
+    /// As `follow`, through every alternative that holds the rest of the path.
+    fn follow_every(
+        &self,
+        module: &Module,
+        path: &[String],
+        depth: usize,
+    ) -> Result<Vec<Found>, String> {
+        let Some((first, rest)) = path.split_first() else {
+            return Ok(vec![Found::Module(module.clone())]);
+        };
+        let start = match first.as_str() {
+            "crate" => self
+                .crate_root(&module.crate_name)
+                .ok_or("crate root unreadable")?,
+            "self" => module.clone(),
+            "super" => self.parent(module)?,
+            other => {
+                if self.alternatives(module, other).len() > 1 {
+                    return self.walk_every(Found::Module(module.clone()), path, depth);
+                }
+                if module.items.iter().any(|item| declares(item, other))
+                    || self.crate_root(other).is_none()
+                {
+                    match self.lookup(module, other, depth)? {
+                        Found::Module(found) => found,
+                        leaf => {
+                            return if rest.is_empty() {
+                                Ok(vec![leaf])
+                            } else {
+                                self.walk_every(leaf, rest, depth)
+                            };
+                        }
+                    }
+                } else {
+                    self.crate_root(other).ok_or("crate root unreadable")?
+                }
+            }
+        };
+        self.walk_every(Found::Module(start), rest, depth)
+    }
+
     fn parent(&self, module: &Module) -> Result<Module, String> {
+        if let Some(parent) = &module.parent {
+            return Ok((**parent).clone());
+        }
         let Some((_, ancestors)) = module.path.split_last() else {
             return Err("super:: at a crate root".to_owned());
         };

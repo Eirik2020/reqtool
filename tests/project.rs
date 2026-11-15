@@ -271,6 +271,133 @@ fn a_test_in_every_cfg_alternative_exercises_every_alternative() {
 }
 
 #[test]
+fn an_import_through_a_cfg_alternative_imports_every_alternative() {
+    // FerroHAL's tests import `crate::chip::ERRATA`, which every chip file
+    // defines: the import reached only the first chip's file (measured
+    // 2026-11-15), so the others' errata tables went untraced.
+    let copy = with_requirements(VALID_ONE);
+    let source = copy.path().join("crates/alpha/src");
+    std::fs::create_dir_all(source.join("chips")).unwrap();
+    for file in ["first.rs", "second.rs"] {
+        std::fs::write(
+            source.join("chips").join(file),
+            "pub const TABLE: u8 = 0;\n",
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        source.join("user.rs"),
+        "use crate::chip::TABLE;\npub fn read() -> u8 {\n    TABLE\n}\n",
+    )
+    .unwrap();
+    let root = source.join("lib.rs");
+    let mut text = std::fs::read_to_string(&root).unwrap();
+    text.push_str(
+        "pub mod user;\n\
+         #[cfg(feature = \"first\")]\n#[path = \"chips/first.rs\"]\npub mod chip;\n\
+         #[cfg(feature = \"second\")]\n#[path = \"chips/second.rs\"]\npub mod chip;\n",
+    );
+    std::fs::write(&root, text).unwrap();
+    let (project, _) = Project::load(copy.path()).unwrap();
+    let imports = project.trace.imports("crates/alpha/src/user.rs");
+    for chip in [
+        "crates/alpha/src/chips/first.rs",
+        "crates/alpha/src/chips/second.rs",
+    ] {
+        assert!(
+            imports.iter().any(|i| i == chip),
+            "{chip} not in {imports:?}"
+        );
+    }
+}
+
+#[test]
+fn an_import_reaches_through_nested_glob_reexports_in_path_modules() {
+    // FerroHAL's F405: `chip` (a #[path] file) re-exports `die::*`, a
+    // #[path] module in `shared/`, which re-exports a table it mounts by its
+    // own #[path] beside it.
+    let copy = with_requirements(VALID_ONE);
+    let source = copy.path().join("crates/alpha/src");
+    std::fs::create_dir_all(source.join("chips/shared")).unwrap();
+    std::fs::write(
+        source.join("chips/first.rs"),
+        "#[path = \"shared/die.rs\"]\nmod die;\npub use die::*;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        source.join("chips/shared/die.rs"),
+        "use super::*;\n#[path = \"table.rs\"]\nmod table;\npub use table::*;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        source.join("chips/shared/table.rs"),
+        "pub const TABLE: u8 = 0;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        source.join("user.rs"),
+        "use crate::chip::TABLE;\npub fn read() -> u8 {\n    TABLE\n}\n",
+    )
+    .unwrap();
+    let root = source.join("lib.rs");
+    let mut text = std::fs::read_to_string(&root).unwrap();
+    text.push_str("pub mod user;\n#[path = \"chips/first.rs\"]\npub mod chip;\n");
+    std::fs::write(&root, text).unwrap();
+    let (project, _) = Project::load(copy.path()).unwrap();
+    let imports = project.trace.imports("crates/alpha/src/user.rs");
+    assert!(
+        imports
+            .iter()
+            .any(|i| i == "crates/alpha/src/chips/shared/table.rs"),
+        "{imports:?}"
+    );
+}
+
+#[test]
+fn super_in_a_module_under_a_cfg_alternative_is_that_alternative() {
+    // FerroHAL's die module, mounted by the F405's chip file, starts with
+    // `use super::*`: `super` was re-resolved from the crate root by path,
+    // landing on the first chip alternative, the F401's (2026-11-15).
+    let copy = with_requirements(VALID_ONE);
+    let source = copy.path().join("crates/alpha/src");
+    std::fs::create_dir_all(source.join("chips/shared")).unwrap();
+    std::fs::write(source.join("chips/first.rs"), "pub const MARK: u8 = 1;\n").unwrap();
+    std::fs::write(
+        source.join("chips/second.rs"),
+        "pub const MARK: u8 = 2;\n#[path = \"shared/die.rs\"]\nmod die;\npub use die::*;\n",
+    )
+    .unwrap();
+    std::fs::write(
+        source.join("chips/shared/die.rs"),
+        "use super::*;\npub fn mark() -> u8 {\n    MARK\n}\n",
+    )
+    .unwrap();
+    let root = source.join("lib.rs");
+    let mut text = std::fs::read_to_string(&root).unwrap();
+    text.push_str(
+        "#[cfg(feature = \"first\")]\n#[path = \"chips/first.rs\"]\npub mod chip;\n\
+         #[cfg(feature = \"second\")]\n#[path = \"chips/second.rs\"]\npub mod chip;\n",
+    );
+    std::fs::write(&root, text).unwrap();
+    let (project, _) = Project::load(copy.path()).unwrap();
+    let imports = project
+        .trace
+        .imports("crates/alpha/src/chips/shared/die.rs");
+    assert!(
+        imports
+            .iter()
+            .any(|i| i == "crates/alpha/src/chips/second.rs"),
+        "{imports:?}"
+    );
+    assert!(
+        !imports
+            .iter()
+            .any(|i| i == "crates/alpha/src/chips/first.rs"),
+        "{imports:?}"
+    );
+}
+
+#[test]
 fn a_valid_single_requirement_has_no_problems() {
     assert_eq!(problems(VALID_ONE), Vec::<String>::new());
 }
