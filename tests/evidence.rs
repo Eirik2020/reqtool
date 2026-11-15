@@ -573,7 +573,11 @@ fn target_evidence_belongs_to_a_board() {
     use reqtool::status::Evidence;
     assert_eq!(
         recorded.boards(&project.requirements["INPUT-001"], 1),
-        vec![("demo-board".to_owned(), Status::Verified)]
+        vec![reqtool::status::BoardStatus {
+            board: "demo-board".to_owned(),
+            status: Status::Verified,
+            tier: None,
+        }]
     );
 
     edit(
@@ -599,6 +603,66 @@ fn target_evidence_belongs_to_a_board() {
         "the board's app is not the code under test"
     );
     assert_eq!(entry_status(path, "INPUT-001", 0), Status::Unverified);
+}
+
+#[test]
+fn a_board_record_is_stamped_with_its_tier() {
+    let repo = repository();
+    let path = repo.path();
+    let toml = path.join("reqtool.toml");
+    let base = std::fs::read_to_string(&toml).unwrap();
+    std::fs::write(
+        &toml,
+        format!("{base}tiers = [\"HIL\", \"DBG\"]\n[board_tiers]\ndemo-board = \"DBG\"\n"),
+    )
+    .unwrap();
+    git(path, &["commit", "-qam", "tiers"]);
+
+    let id = record(
+        path,
+        &request(
+            Method::Procedure(BENCH.into()),
+            Some("demo-board"),
+            Outcome::Pass,
+        ),
+        1,
+    );
+    let records = evidence::load(path).unwrap();
+    let stamped = records.iter().find(|r| r.run_id == id).unwrap();
+    assert_eq!(stamped.tier.as_deref(), Some("DBG"));
+    let (project, recorded) = recorded(path);
+    use reqtool::status::Evidence;
+    let boards = recorded.boards(&project.requirements["INPUT-001"], 1);
+    assert_eq!(boards[0].tier.as_deref(), Some("DBG"));
+    let json = reqtool::report::json(&project, &recorded).unwrap();
+    assert!(json.contains("\"tier\": \"DBG\""), "{json}");
+    let text = reqtool::report::check(&project, "INPUT-001", &recorded).unwrap();
+    assert!(text.contains("demo-board (DBG): verified"), "{text}");
+
+    // With tiers set, a board without one cannot record, and a tier must be listed.
+    std::fs::write(&toml, format!("{base}tiers = [\"HIL\"]\n")).unwrap();
+    git(path, &["commit", "-qam", "untiered"]);
+    let now = Timestamp::from_unix(1_792_195_300);
+    let refused = build(
+        path,
+        &request(
+            Method::Procedure(BENCH.into()),
+            Some("demo-board"),
+            Outcome::Pass,
+        ),
+        now,
+    );
+    assert!(refused.unwrap_err().contains("has no tier"));
+    std::fs::write(
+        &toml,
+        format!("{base}tiers = [\"HIL\"]\n[board_tiers]\ndemo-board = \"BRD\"\n"),
+    )
+    .unwrap();
+    assert!(
+        reqtool::config::Config::load(path)
+            .unwrap_err()
+            .contains("not one of `tiers`")
+    );
 }
 
 #[test]

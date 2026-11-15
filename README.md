@@ -48,7 +48,19 @@ every_file_traced_except = ["hil"]          # what it leaves out, by path prefix
 test_features = [["chip-a"], ["chip-b"]]    # host tests, per feature set
 reviews = "requirements/reviews"            # the default, beside requirements
 maintainers = ["a-maintainer"]              # who may review a diff analysis
+tiers = ["HIL", "DBG"]                      # bench tiers, strongest first
+[board_tiers]                               # each board's tier, one of `tiers`
+demo-board = "HIL"
 ```
+
+`tiers` names how much a board's runs show, in the project's own words, strongest
+first, and `board_tiers` gives each board one. Once `tiers` is set, every board
+record is stamped with its board's tier when it is recorded, and a board without
+one cannot record; a tier not in `tiers` refuses to load. Evidence keeps the tier
+it ran at when a bench changes. `check` shows each board's tier beside its status:
+the newest counting pass's stamp, or the board's tier now for a record from before
+tiers. `check --json` gives every requirement's status, and each entry's boards
+with their statuses and tiers, for a tool that computes from the evidence.
 
 `every_file_traced` makes every source file safety-critical, for a project with
 no per-file notion of it. `every_file_traced_except` leaves paths out of that,

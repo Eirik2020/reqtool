@@ -205,8 +205,8 @@ pub fn check(
                     evidence
                         .boards(requirement, index)
                         .into_iter()
-                        .find(|(name, _)| name == board)
-                        .map_or(Status::Unverified, |(_, status)| status)
+                        .find(|found| found.board == board)
+                        .map_or(Status::Unverified, |found| found.status)
                 } else {
                     evidence.entry(requirement, index)
                 };
