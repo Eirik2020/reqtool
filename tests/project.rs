@@ -271,6 +271,47 @@ fn a_test_in_every_cfg_alternative_exercises_every_alternative() {
 }
 
 #[test]
+fn an_import_through_a_cfg_alternative_imports_every_alternative() {
+    // FerroHAL's tests import `crate::chip::ERRATA`, which every chip file
+    // defines: the import reached only the first chip's file (measured
+    // 2026-11-15), so the others' errata tables went untraced.
+    let copy = with_requirements(VALID_ONE);
+    let source = copy.path().join("crates/alpha/src");
+    std::fs::create_dir_all(source.join("chips")).unwrap();
+    for file in ["first.rs", "second.rs"] {
+        std::fs::write(
+            source.join("chips").join(file),
+            "pub const TABLE: u8 = 0;\n",
+        )
+        .unwrap();
+    }
+    std::fs::write(
+        source.join("user.rs"),
+        "use crate::chip::TABLE;\npub fn read() -> u8 {\n    TABLE\n}\n",
+    )
+    .unwrap();
+    let root = source.join("lib.rs");
+    let mut text = std::fs::read_to_string(&root).unwrap();
+    text.push_str(
+        "pub mod user;\n\
+         #[cfg(feature = \"first\")]\n#[path = \"chips/first.rs\"]\npub mod chip;\n\
+         #[cfg(feature = \"second\")]\n#[path = \"chips/second.rs\"]\npub mod chip;\n",
+    );
+    std::fs::write(&root, text).unwrap();
+    let (project, _) = Project::load(copy.path()).unwrap();
+    let imports = project.trace.imports("crates/alpha/src/user.rs");
+    for chip in [
+        "crates/alpha/src/chips/first.rs",
+        "crates/alpha/src/chips/second.rs",
+    ] {
+        assert!(
+            imports.iter().any(|i| i == chip),
+            "{chip} not in {imports:?}"
+        );
+    }
+}
+
+#[test]
 fn a_valid_single_requirement_has_no_problems() {
     assert_eq!(problems(VALID_ONE), Vec::<String>::new());
 }
