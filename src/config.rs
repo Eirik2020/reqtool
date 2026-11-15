@@ -1,6 +1,7 @@
 //! A project's settings, from `reqtool.toml` at its root: where it keeps its
 //! requirements, roots and evidence, and how its code is built and traced.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::Deserialize;
@@ -57,6 +58,15 @@ pub struct Config {
     /// maintainers, no review holds.
     #[serde(default)]
     pub maintainers: Vec<String>,
+    /// The project's bench tiers, strongest first, in its own words (`HIL`,
+    /// `DBG`, ...): how much a board's runs show. Empty: no tiers.
+    #[serde(default)]
+    pub tiers: Vec<String>,
+    /// Each board's tier, one of `tiers`. Every record from the board is
+    /// stamped with it, so evidence keeps the tier it ran at when a bench
+    /// changes.
+    #[serde(default)]
+    pub board_tiers: BTreeMap<String, String>,
 }
 
 fn default_artifacts() -> String {
@@ -75,7 +85,29 @@ impl Config {
     pub fn load(repository: &Path) -> Result<Self, String> {
         let path = repository.join(FILE);
         let text = std::fs::read_to_string(&path).map_err(|error| format!("{FILE}: {error}"))?;
-        toml::from_str(&text).map_err(|error| format!("{FILE}: {error}"))
+        let config: Self = toml::from_str(&text).map_err(|error| format!("{FILE}: {error}"))?;
+        for (board, tier) in &config.board_tiers {
+            if !config.tiers.contains(tier) {
+                return Err(format!(
+                    "{FILE}: board {board}'s tier {tier} is not one of `tiers` ({})",
+                    config.tiers.join(", ")
+                ));
+            }
+        }
+        Ok(config)
+    }
+
+    /// A board's tier, when the project has tiers. A board with none is an
+    /// error once `tiers` is set, so no record goes unstamped.
+    pub fn tier(&self, board: &str) -> Result<Option<String>, String> {
+        if self.tiers.is_empty() {
+            return Ok(None);
+        }
+        self.board_tiers
+            .get(board)
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| format!("{FILE}: board {board} has no tier in `board_tiers`"))
     }
 
     pub fn gates(&self) -> String {

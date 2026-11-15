@@ -40,7 +40,7 @@ use crate::library::Libraries;
 use crate::project::Project;
 use crate::review::{self, Bridges, Reviews};
 use crate::schema::{Entry, Environment, Hazard, Level, Method, Requirement};
-use crate::status::{Evidence, Status};
+use crate::status::{BoardStatus, Evidence, Status};
 use crate::trace::{Import, Trace};
 
 pub const RECORD_SCHEMA_VERSION: u32 = 5;
@@ -53,6 +53,10 @@ pub struct Record {
     pub recorded_at_utc: String,
     /// The board's firmware app, for target-level evidence.
     pub board: Option<String>,
+    /// The board's tier when the run was recorded (`reqtool.toml`'s
+    /// `board_tiers`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<String>,
     pub revision: String,
     /// `clean` or `dirty`: uncommitted changes to tracked files.
     pub working_tree: String,
@@ -455,7 +459,7 @@ fn borrowed(pairs: &[(String, String)]) -> Vec<(&str, &str)> {
 /// the same evidence gives without reviews.
 pub struct Recorded {
     statuses: BTreeMap<(String, usize), Status>,
-    boards: BTreeMap<(String, usize), Vec<(String, Status)>>,
+    boards: BTreeMap<(String, usize), Vec<BoardStatus>>,
     owed_files: BTreeMap<String, Vec<String>>,
     owed_board_files: BTreeMap<String, Vec<String>>,
     target_only_files: BTreeMap<String, Vec<String>>,
@@ -586,6 +590,7 @@ impl Recorded {
                 let mut per_board = Vec::new();
                 for board in names {
                     let mut judged = Vec::new();
+                    let mut tier = None;
                     for (record, result) in relevant
                         .iter()
                         .filter(|(record, _)| record.board.as_deref() == Some(board))
@@ -629,15 +634,23 @@ impl Recorded {
                             board_ever.extend(compiled_in.iter().copied());
                             if counts {
                                 board_covered.extend(compiled_in.iter().copied());
+                                tier = record.tier.clone();
                             }
                         }
                         judged.push((counts, result.result));
                     }
-                    per_board.push((board.to_owned(), entry_status(judged.into_iter())));
+                    let status = entry_status(judged.into_iter());
+                    let tier =
+                        tier.or_else(|| current.project.config.board_tiers.get(board).cloned());
+                    per_board.push(BoardStatus {
+                        board: board.to_owned(),
+                        status,
+                        tier,
+                    });
                 }
                 let overall = per_board
                     .iter()
-                    .map(|(_, status)| *status)
+                    .map(|board| board.status)
                     .max()
                     .unwrap_or(Status::Unverified);
                 statuses.insert(key.clone(), overall);
@@ -730,7 +743,7 @@ impl Evidence for Recorded {
             .unwrap_or(Status::Unverified)
     }
 
-    fn boards(&self, requirement: &Requirement, entry: usize) -> Vec<(String, Status)> {
+    fn boards(&self, requirement: &Requirement, entry: usize) -> Vec<BoardStatus> {
         self.boards
             .get(&(requirement.id.clone(), entry))
             .cloned()
@@ -894,6 +907,10 @@ pub fn build(
         run_id,
         recorded_at_utc: now.iso(),
         board: request.board.map(str::to_owned),
+        tier: match request.board {
+            Some(board) => project.config.tier(board)?,
+            None => None,
+        },
         revision,
         working_tree,
         configuration,

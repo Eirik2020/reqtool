@@ -232,8 +232,12 @@ fn detail(
             entry.hazard.name(),
             evidence.entry(requirement, index).name()
         );
-        for (board, status) in evidence.boards(requirement, index) {
-            let _ = writeln!(out, "      {board}: {}", status.name());
+        for board in evidence.boards(requirement, index) {
+            let tier = board
+                .tier
+                .map(|tier| format!(" ({tier})"))
+                .unwrap_or_default();
+            let _ = writeln!(out, "      {}{tier}: {}", board.board, board.status.name());
         }
         for step in evidence.reviews(requirement, index) {
             let _ = writeln!(out, "      stands on a review: {step}");
@@ -332,4 +336,57 @@ pub fn maturity(
         }
     }
     out
+}
+
+/// Every requirement's status, and each entry's level, environment, method,
+/// status and boards with their tiers, as JSON.
+pub fn json(project: &Project, evidence: &dyn Evidence) -> Result<String, String> {
+    let statuses = status::compute(&project.requirements, evidence);
+    let requirements: Vec<serde_json::Value> = project
+        .requirements
+        .values()
+        .map(|requirement| {
+            let entries: Vec<serde_json::Value> = requirement
+                .verification
+                .entries
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| {
+                    let (kind, name) = match &entry.method {
+                        Method::Test(path) => ("test", path.as_str()),
+                        Method::Procedure(reference) => ("procedure", reference.as_str()),
+                        Method::Library(link) => ("library", link.as_str()),
+                    };
+                    let boards: Vec<serde_json::Value> = evidence
+                        .boards(requirement, index)
+                        .into_iter()
+                        .map(|board| {
+                            serde_json::json!({
+                                "board": board.board,
+                                "status": board.status.name(),
+                                "tier": board.tier,
+                            })
+                        })
+                        .collect();
+                    serde_json::json!({
+                        "level": entry.level.name(),
+                        "environment": entry.environment.name(),
+                        "method": { kind: name },
+                        "status": evidence.entry(requirement, index).name(),
+                        "boards": boards,
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "id": requirement.id,
+                "status": statuses.get(&requirement.id).map_or("unverified", |status| status.name()),
+                "entries": entries,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({
+        "tiers": project.config.tiers,
+        "requirements": requirements,
+    }))
+    .map_err(|error| error.to_string())
 }

@@ -28,13 +28,23 @@ impl Status {
     }
 }
 
+/// A target-level entry's status on one board, with the tier its counting
+/// evidence ran at: the newest counting pass's stamp, or the board's tier in
+/// `reqtool.toml` for a record from before tiers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BoardStatus {
+    pub board: String,
+    pub status: Status,
+    pub tier: Option<String>,
+}
+
 /// Where entry statuses come from: the evidence records
 /// ([`crate::evidence::Recorded`]), or nothing at all ([`NoEvidence`]).
 pub trait Evidence {
     fn entry(&self, requirement: &Requirement, entry: usize) -> Status;
 
     /// For a target-level entry, its status on each board with evidence.
-    fn boards(&self, _requirement: &Requirement, _entry: usize) -> Vec<(String, Status)> {
+    fn boards(&self, _requirement: &Requirement, _entry: usize) -> Vec<BoardStatus> {
         Vec::new()
     }
 

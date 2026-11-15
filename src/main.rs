@@ -36,7 +36,13 @@ enum Command {
     /// Show status: of everything, of one requirement by ID, of a governing
     /// requirement, or of a source file and the requirements it declares, by
     /// path or by module path such as `my_crate::rc_receiver`.
-    Check { target: Option<String> },
+    Check {
+        target: Option<String>,
+        /// Every requirement's status as JSON, each entry with its boards'
+        /// statuses and tiers: for tools that compute from the evidence.
+        #[arg(long, conflicts_with = "target")]
+        json: bool,
+    },
     /// Report maturity for one configuration: every requirement the
     /// safety-critical files it compiles in declare, with its status there.
     /// Runs cargo check for the board.
@@ -217,10 +223,13 @@ fn main() -> ExitCode {
                 ))
             }
         }
-        Command::Check { target } => recorded(&current, None).and_then(|evidence| match target {
-            None => Ok(report::summary(&project, &evidence)),
-            Some(target) => report::check(&project, &target, &evidence),
-        }),
+        Command::Check { target, json } => {
+            recorded(&current, None).and_then(|evidence| match target {
+                None if json => report::json(&project, &evidence),
+                None => Ok(report::summary(&project, &evidence)),
+                Some(target) => report::check(&project, &target, &evidence),
+            })
+        }
         Command::Report { board, features } => configurations
             .configuration(&board, &features)
             .and_then(|configuration| {
