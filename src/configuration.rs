@@ -10,7 +10,8 @@
 //!   which holds its scheduling table (priorities and bindings), and every
 //!   file that is not Rust source, such as its manifest, `.cargo/config.toml`
 //!   and linker map;
-//! - every environment variable the compiler read, such as `DEFMT_LOG`,
+//! - every environment variable the compiler read, such as `DEFMT_LOG`
+//!   (not the ones cargo sets to name the target being built),
 //!   except those a build script sets, such as the git revision;
 //! - the version of every external crate compiled in.
 //!
@@ -341,8 +342,18 @@ pub fn from_messages(stdout: &str, base: &Path) -> Result<Compiled, String> {
     }
     compiled
         .environment
-        .retain(|name, _| !set_by_scripts.contains(name));
+        .retain(|name, _| !set_by_scripts.contains(name) && !names_the_target(name));
     Ok(compiled)
+}
+
+/// A variable cargo sets per target: which binary or crate is being built,
+/// not how. Each dep-info of one crate names its own, so keeping one would
+/// record whichever target cargo reported last as the configuration's.
+fn names_the_target(name: &str) -> bool {
+    matches!(
+        name,
+        "CARGO_BIN_NAME" | "CARGO_CRATE_NAME" | "CARGO_PRIMARY_PACKAGE" | "CARGO_TARGET_TMPDIR"
+    ) || name.starts_with("CARGO_BIN_EXE_")
 }
 
 /// `# env-dep:NAME=value` lines, as rustc writes them into dep-info.
@@ -512,6 +523,36 @@ mod tests {
             .map(|path| path.to_string_lossy().into_owned())
             .collect();
         assert_eq!(files, ["/r/memory.x", "/r/src/lib.rs", "/r/src/my file.rs"]);
+    }
+
+    #[test]
+    fn the_target_cargo_names_is_not_configuration() {
+        // Two binaries of one crate: each dep-info names its own target, so
+        // a kept CARGO_BIN_NAME would be whichever cargo reported last.
+        let dir = std::env::temp_dir().join(format!("reqtool-target-env-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut stdout = String::new();
+        for bin in ["run-a", "run-b"] {
+            let d = dir.join(format!("{bin}.d"));
+            std::fs::write(
+                &d,
+                format!(
+                    "{bin}: src/bin/{bin}.rs\n\n# env-dep:CARGO_BIN_NAME={bin}\n\
+                     # env-dep:CARGO_CRATE_NAME={bin}\n# env-dep:DEFMT_LOG=info\n"
+                ),
+            )
+            .unwrap();
+            stdout.push_str(&format!(
+                "{{\"reason\":\"compiler-artifact\",\"package_id\":\"path+file:///x#bench@0.1.0\",\"filenames\":[\"{}\"]}}\n",
+                dir.join(bin).display()
+            ));
+        }
+        let compiled = from_messages(&stdout, &dir).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(
+            compiled.environment.keys().collect::<Vec<_>>(),
+            ["DEFMT_LOG"]
+        );
     }
 
     #[test]
