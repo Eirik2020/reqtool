@@ -496,6 +496,14 @@ impl<'a> Resolver<'a> {
                 .unwrap_or(Path::new("."))
                 .join(relative)
         });
+        // A file named by `#[path]` owns its own directory, as rustc treats
+        // it: its out-of-line children sit beside it, whatever its name. So a
+        // directory mounted twice (`#[path = "timer/mod.rs"] mod timer_v1;`)
+        // finds `timer/pwm.rs` under both names.
+        let directory = match &explicit {
+            Some(file) => file.parent().unwrap_or(Path::new(".")).to_path_buf(),
+            None => directory,
+        };
         let candidates = match explicit {
             Some(file) => vec![file],
             None => vec![
