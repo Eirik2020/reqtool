@@ -224,6 +224,10 @@ fn detail(
             Method::Procedure(reference) => format!("procedure {reference}"),
             Method::Library(link) => format!("library {link}"),
         };
+        let method = match &entry.part {
+            Some(part) => format!("{method} (a carrier of part {part})"),
+            None => method,
+        };
         let _ = writeln!(
             out,
             "    {:<10} {:<11} {:<9} {:<10} {method}",
@@ -372,6 +376,7 @@ pub fn json(project: &Project, evidence: &dyn Evidence) -> Result<String, String
                         "level": entry.level.name(),
                         "environment": entry.environment.name(),
                         "method": { kind: name },
+                        "part": entry.part,
                         "status": evidence.entry(requirement, index).name(),
                         "boards": boards,
                     })

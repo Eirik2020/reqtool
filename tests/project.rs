@@ -595,3 +595,47 @@ fn a_procedure_never_points_into_a_retired_directory() {
         );
     assert_problem(&retired, "which is retired");
 }
+
+#[test]
+fn a_part_is_named_by_two_hardware_procedures_or_more() {
+    let bench = "        - level: system
+          environment: product
+          hazard: equipment
+          preconditions:
+            propellers: removed
+          part: PART
+          method:
+            procedure: project_meta/testing/procedures.md#Bench Gate
+";
+    let alone = VALID_ONE.replacen(
+        "            test: alpha::input::tests::rejects_stale\n",
+        &format!(
+            "            test: alpha::input::tests::rejects_stale\n{}",
+            bench.replace("PART", "input")
+        ),
+        1,
+    );
+    assert_problem(&alone, "part input has one carrier");
+
+    let on_a_test = VALID_ONE.replacen(
+        "          method:\n            test: alpha::input::tests::rejects_stale\n",
+        "          part: input\n          method:\n            test: alpha::input::tests::rejects_stale\n",
+        1,
+    );
+    assert_problem(&on_a_test, "not a procedure on hardware");
+
+    let two = VALID_ONE.replacen(
+        "            test: alpha::input::tests::rejects_stale\n",
+        &format!(
+            "            test: alpha::input::tests::rejects_stale\n{}{}",
+            bench.replace("PART", "input"),
+            bench.replace("PART", "input")
+        ),
+        1,
+    );
+    let found = problems(&two);
+    assert!(
+        !found.iter().any(|problem| problem.contains("part")),
+        "{found:#?}"
+    );
+}

@@ -13,6 +13,7 @@ use reqtool::status::{self, Status};
 
 const TEST: &str = "alpha::input::tests::rejects_stale";
 const BENCH: &str = "project_meta/testing/procedures.md#Bench Gate";
+const BENCH_TWO: &str = "project_meta/testing/procedures.md#Bench Gate Two";
 
 fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).unwrap();
@@ -603,6 +604,86 @@ fn target_evidence_belongs_to_a_board() {
         "the board's app is not the code under test"
     );
     assert_eq!(entry_status(path, "INPUT-001", 0), Status::Unverified);
+}
+
+/// Adds a second procedure and makes both hardware entries of INPUT-001
+/// carriers of one part, or leaves the new entry on its own.
+fn with_second_carrier(repository: &Path, part: bool) {
+    let path = repository.join("project_meta/testing/procedures.md");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        format!("{text}\n## Bench Gate Two\n\nRun it there.\n"),
+    )
+    .unwrap();
+    let part = if part { "          part: input\n" } else { "" };
+    edit(
+        repository,
+        "project_meta/requirements/input.yaml",
+        "          preconditions:\n            propellers: removed\n          method:\n            procedure: project_meta/testing/procedures.md#Bench Gate\n",
+        &format!(
+            "          preconditions:\n            propellers: removed\n{part}          method:\n            procedure: project_meta/testing/procedures.md#Bench Gate\n        - level: system\n          environment: product\n          hazard: equipment\n          preconditions:\n            propellers: removed\n{part}          method:\n            procedure: {BENCH_TWO}\n"
+        ),
+    );
+}
+
+#[test]
+fn a_part_stands_on_any_one_of_its_carriers() {
+    // Without a part, each hardware entry has to stand on its own.
+    let repo = repository();
+    let path = repo.path();
+    with_second_carrier(path, false);
+    record(
+        path,
+        &request(Method::Test(TEST.into()), None, Outcome::Pass),
+        1,
+    );
+    record(
+        path,
+        &request(
+            Method::Procedure(BENCH.into()),
+            Some("demo-board"),
+            Outcome::Pass,
+        ),
+        2,
+    );
+    assert_eq!(entry_status(path, "INPUT-001", 1), Status::Verified);
+    assert_eq!(entry_status(path, "INPUT-001", 2), Status::Unverified);
+    assert_eq!(requirement_status(path, "INPUT-001"), Status::Unverified);
+
+    // As carriers of one part, the pass on one of them proves the part.
+    let repo = repository();
+    let path = repo.path();
+    with_second_carrier(path, true);
+    record(
+        path,
+        &request(Method::Test(TEST.into()), None, Outcome::Pass),
+        1,
+    );
+    assert_eq!(requirement_status(path, "INPUT-001"), Status::Unverified);
+    record(
+        path,
+        &request(
+            Method::Procedure(BENCH.into()),
+            Some("demo-board"),
+            Outcome::Pass,
+        ),
+        2,
+    );
+    assert_eq!(entry_status(path, "INPUT-001", 2), Status::Unverified);
+    assert_eq!(requirement_status(path, "INPUT-001"), Status::Verified);
+
+    // A fail on the other carrier is not hidden by that pass.
+    record(
+        path,
+        &request(
+            Method::Procedure(BENCH_TWO.into()),
+            Some("demo-board"),
+            Outcome::Fail,
+        ),
+        3,
+    );
+    assert_eq!(requirement_status(path, "INPUT-001"), Status::Failed);
 }
 
 #[test]
