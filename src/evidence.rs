@@ -21,9 +21,13 @@
 //! other schemas are left beside these untouched, and not read.
 //!
 //! A reviewed diff analysis ([`crate::review`]) lets a result recorded with an
-//! external crate at one version count as if it were at another. It bridges
-//! that version and nothing else, and an entry that stands on one says so.
+//! external crate at one version count as if it were at another. So does a
+//! requirement's own links into a library ([`crate::library`]), for a move of
+//! that library's git commit, while each linked requirement keeps its claim
+//! and is verified at the commit the build uses. Either bridges that version
+//! and nothing else, and an entry that stands on one says so.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -36,9 +40,9 @@ use crate::configuration::{Configuration, Configurations};
 use crate::details::{self, Details};
 use crate::identity;
 use crate::items::Resolver;
-use crate::library::Libraries;
+use crate::library::{self, Libraries};
 use crate::project::Project;
-use crate::review::{self, Bridges, Reviews};
+use crate::review::{self, Bridges, Reviews, Step};
 use crate::schema::{Entry, Environment, Hazard, Level, Method, Requirement};
 use crate::status::{BoardStatus, Evidence, Status};
 use crate::trace::{Import, Trace};
@@ -324,14 +328,14 @@ impl Current<'_> {
 
     /// Whether `module`, exercised by this result, is unchanged since: its
     /// identity and the versions of the external crates it imports, each the
-    /// same or, with `reviews`, carried forward by a chain of them. The steps
-    /// it stood on, or `None` when it changed.
+    /// same or carried forward by `carrier`. The steps it stood on, or `None`
+    /// when it changed.
     /// Another local file is a part with its own evidence, so it is not here.
     fn module_unchanged(
         &self,
         record: &Record,
         module: &str,
-        reviews: Option<&Reviews>,
+        carrier: &Carrier<'_>,
     ) -> Option<Bridges> {
         let recorded = record.modules.get(module)?;
         let now = self.trace.imports(module);
@@ -362,7 +366,7 @@ impl Current<'_> {
                 .collect()
         };
         let (recorded, now) = (versions(&recorded), versions(&now));
-        review::pair(&borrowed(&recorded), &borrowed(&now), reviews)
+        carrier.pair(&borrowed(&recorded), &borrowed(&now))
     }
 }
 
@@ -370,7 +374,8 @@ impl Current<'_> {
     /// Whether the parts a board run covered are unchanged, and the steps that
     /// stood on reviews: every file declaring the requirement that the run
     /// compiled in has the identity it had, and every external crate such a
-    /// file imports is at the version it ran with, or a reviewed bump of it.
+    /// file imports is at the version it ran with, or one `carrier` carries
+    /// it forward to.
     /// The image and everything else compiled beside those files is not part
     /// of it: a file added to the board, another run's code or a rebuild
     /// leaves the result standing. A run that compiled in no declaring file
@@ -382,7 +387,7 @@ impl Current<'_> {
         ran: &Configuration,
         declaring: &[&str],
         scope: Option<&Configuration>,
-        reviews: Option<&Reviews>,
+        carrier: &Carrier<'_>,
     ) -> Result<Option<Bridges>, String> {
         let compiled_in: Vec<&str> = declaring
             .iter()
@@ -429,7 +434,63 @@ impl Current<'_> {
                 }
             }
         }
-        Ok(review::pair(&borrowed(&recorded), &borrowed(&now), reviews))
+        Ok(carrier.pair(&borrowed(&recorded), &borrowed(&now)))
+    }
+}
+
+/// What carries a moved external crate forward for one requirement's
+/// evidence: a chain of reviews, or, for a library the project links, this
+/// requirement's own links into it.
+struct Carrier<'a> {
+    reviews: Option<&'a Reviews>,
+    libraries: &'a dyn Libraries,
+    /// Every crate the project links, each with the IDs this requirement
+    /// links in it, which may be none; `None` when links carry nothing.
+    links: Option<BTreeMap<&'a str, Vec<&'a str>>>,
+    /// Why a move of a linked crate was not carried, since last taken.
+    refused: RefCell<BTreeSet<String>>,
+}
+
+impl Carrier<'_> {
+    fn carry(&self, package: &str, from: &str, to: &str) -> Option<Vec<Step>> {
+        if let Some(chain) = self
+            .reviews
+            .and_then(|reviews| reviews.chain(package, from, to))
+        {
+            return Some(
+                chain
+                    .iter()
+                    .map(|review| Step::Review(review.describe()))
+                    .collect(),
+            );
+        }
+        let ids = self.links.as_ref()?.get(package)?;
+        let refuse = |why: String| {
+            self.refused
+                .borrow_mut()
+                .insert(format!("{package} {from} to {to}: {why}"));
+            None
+        };
+        if ids.is_empty() {
+            return refuse(format!("it links none of {package}'s requirements"));
+        }
+        match self.libraries.carry(package, from, to, ids) {
+            Ok(()) => Some(vec![Step::Links(format!(
+                "{package} {from} to {to}, on its links {}",
+                ids.join(", ")
+            ))]),
+            Err(why) => refuse(why),
+        }
+    }
+
+    fn pair(&self, recorded: &[(&str, &str)], now: &[(&str, &str)]) -> Option<Bridges> {
+        review::pair_with(recorded, now, &|package, from, to| {
+            self.carry(package, from, to)
+        })
+    }
+
+    fn take_refused(&self) -> BTreeSet<String> {
+        std::mem::take(&mut *self.refused.borrow_mut())
     }
 }
 
@@ -455,8 +516,8 @@ fn borrowed(pairs: &[(String, String)]) -> Vec<(&str, &str)> {
 /// only the modules it compiles in count, and only board evidence from that
 /// configuration whose declaring files are unchanged.
 ///
-/// An entry stands on a review where its status, or a board's, is not the one
-/// the same evidence gives without reviews.
+/// An entry stands on a review, or on its requirement's links, where its
+/// status, or a board's, is not the one the same evidence gives without them.
 pub struct Recorded {
     statuses: BTreeMap<(String, usize), Status>,
     boards: BTreeMap<(String, usize), Vec<BoardStatus>>,
@@ -464,6 +525,9 @@ pub struct Recorded {
     owed_board_files: BTreeMap<String, Vec<String>>,
     target_only_files: BTreeMap<String, Vec<String>>,
     on_review: BTreeMap<(String, usize), Bridges>,
+    /// Moves of a linked library that evidence otherwise counting did not
+    /// stand across, each with why.
+    not_carried: BTreeMap<(String, usize), BTreeSet<String>>,
 }
 
 impl Recorded {
@@ -472,12 +536,11 @@ impl Recorded {
         records: &[Record],
         scope: Option<&Configuration>,
     ) -> Result<Self, String> {
-        let mut judged = Self::judge(current, records, scope, Some(current.reviews))?;
-        if current.reviews.is_empty() {
-            judged.on_review.clear();
+        let mut judged = Self::judge(current, records, scope, true)?;
+        if judged.on_review.is_empty() {
             return Ok(judged);
         }
-        let without = Self::judge(current, records, scope, None)?;
+        let without = Self::judge(current, records, scope, false)?;
         judged.on_review.retain(|key, _| {
             judged.statuses.get(key) != without.statuses.get(key)
                 || judged.boards.get(key) != without.boards.get(key)
@@ -485,23 +548,39 @@ impl Recorded {
         Ok(judged)
     }
 
-    /// Statuses with these reviews, or none, and the steps each entry's
-    /// counting results stood on.
+    /// Statuses with the project's reviews and links, or with neither, and
+    /// the steps each entry's counting results stood on.
     fn judge(
         current: &Current<'_>,
         records: &[Record],
         scope: Option<&Configuration>,
-        reviews: Option<&Reviews>,
+        bridged: bool,
     ) -> Result<Self, String> {
         let project = current.project;
+        let links = linked(project);
         let mut statuses = BTreeMap::new();
         let mut boards = BTreeMap::new();
         let mut owed_files = BTreeMap::new();
         let mut owed_board_files = BTreeMap::new();
         let mut target_only_files = BTreeMap::new();
         let mut on_review: BTreeMap<(String, usize), Bridges> = BTreeMap::new();
+        let mut not_carried: BTreeMap<(String, usize), BTreeSet<String>> = BTreeMap::new();
         let host_files = current.configurations.host_files()?;
         for requirement in project.requirements.values() {
+            let carrier = Carrier {
+                reviews: bridged.then_some(current.reviews),
+                libraries: current.libraries,
+                links: bridged.then(|| {
+                    links
+                        .iter()
+                        .map(|(package, by)| {
+                            let ids = by.get(requirement.id.as_str()).cloned();
+                            (*package, ids.unwrap_or_default())
+                        })
+                        .collect()
+                }),
+                refused: RefCell::new(BTreeSet::new()),
+            };
             let declaring: BTreeSet<&str> = current
                 .trace
                 .declaring(&requirement.id)
@@ -548,7 +627,7 @@ impl Recorded {
                             .copied()
                             .filter(|module| {
                                 current
-                                    .module_unchanged(record, module, reviews)
+                                    .module_unchanged(record, module, &carrier)
                                     .map(|bridges| stood_on.extend(bridges))
                                     .is_some()
                             })
@@ -559,13 +638,17 @@ impl Recorded {
                                 !result.exercised.is_empty()
                                     && result.exercised.iter().all(|module| {
                                         current
-                                            .module_unchanged(record, module, reviews)
+                                            .module_unchanged(record, module, &carrier)
                                             .map(|bridges| stood_on.extend(bridges))
                                             .is_some()
                                     })
                             } else {
                                 !unchanged.is_empty()
                             };
+                        let refused = carrier.take_refused();
+                        if current_claim && !refused.is_empty() {
+                            not_carried.entry(key.clone()).or_default().extend(refused);
+                        }
                         if counts && !stood_on.is_empty() {
                             on_review.entry(key.clone()).or_default().extend(stood_on);
                         }
@@ -615,7 +698,7 @@ impl Recorded {
                                         ran,
                                         &all_declaring,
                                         scope,
-                                        reviews,
+                                        &carrier,
                                     )? {
                                         Some(bridges) => {
                                             if !bridges.is_empty() {
@@ -630,6 +713,10 @@ impl Recorded {
                                     }
                                 }
                             };
+                        let refused = carrier.take_refused();
+                        if !refused.is_empty() {
+                            not_carried.entry(key.clone()).or_default().extend(refused);
+                        }
                         if result.result == Outcome::Pass {
                             board_ever.extend(compiled_in.iter().copied());
                             if counts {
@@ -731,8 +818,32 @@ impl Recorded {
             owed_board_files,
             target_only_files,
             on_review,
+            not_carried,
         })
     }
+}
+
+/// The crates the project links, each with the requirements linking it and
+/// the IDs each links there.
+fn linked(project: &Project) -> BTreeMap<&str, BTreeMap<&str, Vec<&str>>> {
+    let mut links: BTreeMap<&str, BTreeMap<&str, Vec<&str>>> = BTreeMap::new();
+    for requirement in project.requirements.values() {
+        for entry in &requirement.verification.entries {
+            if let Method::Library(link) = &entry.method
+                && let Ok((package, id)) = library::parse(link)
+            {
+                let ids = links
+                    .entry(package)
+                    .or_default()
+                    .entry(requirement.id.as_str())
+                    .or_default();
+                if !ids.contains(&id) {
+                    ids.push(id);
+                }
+            }
+        }
+    }
+    links
 }
 
 impl Evidence for Recorded {
@@ -772,9 +883,40 @@ impl Evidence for Recorded {
     }
 
     fn reviews(&self, requirement: &Requirement, entry: usize) -> Vec<String> {
+        self.steps(requirement, entry, |step| match step {
+            Step::Review(text) => Some(text),
+            Step::Links(_) => None,
+        })
+    }
+
+    fn links(&self, requirement: &Requirement, entry: usize) -> Vec<String> {
+        self.steps(requirement, entry, |step| match step {
+            Step::Links(text) => Some(text),
+            Step::Review(_) => None,
+        })
+    }
+
+    fn not_carried(&self, requirement: &Requirement, entry: usize) -> Vec<String> {
+        if self.entry(requirement, entry) == Status::Verified {
+            return Vec::new();
+        }
+        self.not_carried
+            .get(&(requirement.id.clone(), entry))
+            .map(|why| why.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+}
+
+impl Recorded {
+    fn steps(
+        &self,
+        requirement: &Requirement,
+        entry: usize,
+        kind: impl Fn(&Step) -> Option<&String>,
+    ) -> Vec<String> {
         self.on_review
             .get(&(requirement.id.clone(), entry))
-            .map(|bridges| bridges.iter().cloned().collect())
+            .map(|bridges| bridges.iter().filter_map(&kind).cloned().collect())
             .unwrap_or_default()
     }
 }

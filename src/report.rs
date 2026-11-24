@@ -33,14 +33,18 @@ pub fn summary(project: &Project, evidence: &dyn Evidence) -> String {
     out.push('\n');
     out.push_str(&left_out(project));
     for requirement in project.requirements.values() {
+        let entries = requirement.verification.entries.len();
+        let on_review = (0..entries).any(|entry| !evidence.reviews(requirement, entry).is_empty());
+        let on_links = (0..entries).any(|entry| !evidence.links(requirement, entry).is_empty());
         let gap = if has_no_method(requirement) {
             "  (no method)"
-        } else if (0..requirement.verification.entries.len())
-            .any(|entry| !evidence.reviews(requirement, entry).is_empty())
-        {
-            "  (stands on a review)"
         } else {
-            ""
+            match (on_review, on_links) {
+                (true, true) => "  (stands on a review and on its links)",
+                (true, false) => "  (stands on a review)",
+                (false, true) => "  (stands on its links)",
+                (false, false) => "",
+            }
         };
         let _ = writeln!(
             out,
@@ -245,6 +249,12 @@ fn detail(
         }
         for step in evidence.reviews(requirement, index) {
             let _ = writeln!(out, "      stands on a review: {step}");
+        }
+        for step in evidence.links(requirement, index) {
+            let _ = writeln!(out, "      stands across a move: {step}");
+        }
+        for why in evidence.not_carried(requirement, index) {
+            let _ = writeln!(out, "      not carried across a move: {why}");
         }
     }
     out
