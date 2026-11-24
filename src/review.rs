@@ -78,8 +78,18 @@ impl Review {
     }
 }
 
-/// The steps a chain of reviews stood on, each described.
-pub type Bridges = BTreeSet<String>;
+/// One step evidence stood on to count at a version other than the one it
+/// was recorded at.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum Step {
+    /// A reviewed bump, described.
+    Review(String),
+    /// A move of a library the requirement links, carried by its links.
+    Links(String),
+}
+
+/// The steps evidence stood on.
+pub type Bridges = BTreeSet<Step>;
 
 /// The reviews that hold.
 #[derive(Clone, Debug, Default)]
@@ -154,6 +164,27 @@ pub fn pair(
     now: &[(&str, &str)],
     reviews: Option<&Reviews>,
 ) -> Option<Bridges> {
+    pair_with(recorded, now, &|package, from, to| {
+        reviews?.chain(package, from, to).map(|chain| {
+            chain
+                .iter()
+                .map(|review| Step::Review(review.describe()))
+                .collect()
+        })
+    })
+}
+
+/// What carries a crate's version forward, `from` to `to`: the steps it
+/// stands on, or `None` when nothing does.
+pub type Carry<'a> = dyn Fn(&str, &str, &str) -> Option<Vec<Step>> + 'a;
+
+/// Pairs as [`pair`] does, with `carry` deciding which moved versions are
+/// carried forward to which current ones.
+pub fn pair_with(
+    recorded: &[(&str, &str)],
+    now: &[(&str, &str)],
+    carry: &Carry<'_>,
+) -> Option<Bridges> {
     let mut open: Vec<Option<(&str, String)>> = now
         .iter()
         .map(|(package, version)| Some((*package, same_form(version))))
@@ -174,19 +205,16 @@ pub fn pair(
         return None;
     }
     let mut bridges = Bridges::new();
-    if moved.is_empty() {
-        return Some(bridges);
-    }
     let mut used = vec![false; open.len()];
-    assign(&moved, &open, reviews?, &mut used, &mut bridges).then_some(bridges)
+    assign(&moved, &open, carry, &mut used, &mut bridges).then_some(bridges)
 }
 
-/// Pairs each moved version with an unused current one a chain reaches,
+/// Pairs each moved version with an unused current one it is carried to,
 /// backtracking where an earlier choice leaves a later version unpaired.
 fn assign(
     moved: &[(&str, String)],
     open: &[(&str, String)],
-    reviews: &Reviews,
+    carry: &Carry<'_>,
     used: &mut [bool],
     bridges: &mut Bridges,
 ) -> bool {
@@ -197,13 +225,13 @@ fn assign(
         if used[index] || candidate != package {
             continue;
         }
-        let Some(chain) = reviews.chain(package, from, to) else {
+        let Some(steps) = carry(package, from, to) else {
             continue;
         };
         let before = bridges.clone();
-        bridges.extend(chain.iter().map(|review| review.describe()));
+        bridges.extend(steps);
         used[index] = true;
-        if assign(rest, open, reviews, used, bridges) {
+        if assign(rest, open, carry, used, bridges) {
             return true;
         }
         used[index] = false;

@@ -16,7 +16,8 @@ computed from it, never written.
   hashed, ignoring whitespace and comments. Evidence records the hash, and a mismatch flags it.
 - **Dependencies are pinned.** Bumping one flags the files importing it until a
   maintainer has reviewed a diff analysis, or they are reverified. Contributors may
-  do the analysis ([Reviewed bumps](#reviewed-bumps)).
+  do the analysis ([Reviewed bumps](#reviewed-bumps)). A requirement's links into
+  a library can carry a move of it instead (below).
 - **The compiler is not part of evidence.** Differences between compiler versions
   are negligible outside safety assurance, which reqtool does not address.
 - **The hazard decides who runs a test.** An agent may run and record anything
@@ -25,7 +26,10 @@ computed from it, never written.
 - **A library presents its requirements and supplies its evidence.** A project
   using it maps its own requirements onto them, by crate and ID
   (`my-hal:UART-012`), and inherits that evidence. IDs carry no project
-  prefix; the crate name does that.
+  prefix; the crate name does that. Those links also carry a requirement's own
+  evidence across a move of the library's commit while each keeps its claim and
+  is verified there, so a README change in a library owes nothing above it
+  ([Moves a library's links carry](#moves-a-librarys-links-carry)).
 
 ## A project's settings
 
@@ -103,7 +107,10 @@ cargo run --release -- review --crate my-hal --from 0.1.0 --to 0.1.1 \
   that requirement and the files that declare it; with a root the
   requirements derived from it; with a file, by path or by module path, the
   requirements it declares. Agents run `check` on a file before changing it.
-  An entry whose status stands on a reviewed bump says so, naming each step.
+  An entry whose status stands on a reviewed bump, or on its requirement's
+  links across a library's move, says so, naming each step. An entry that is
+  not verified names each move of a linked library its evidence was not
+  carried across, and why.
 - `report --board <board> [--features a,b]` reports maturity for one
   configuration: every requirement the safety-critical files it
   compiles in declare, with its status there, and the safety-critical files
@@ -169,12 +176,13 @@ and a procedure's own section.
   files it imports directly. A source file's identity ignores whitespace and
   comments; an external crate's is its locked version. A host pass counts for a
   file that declares its requirement while the claim, the file and the external
-  crates it imports are unchanged; another local file is a part with its own
-  evidence. A pass that reached no declaring file, or a requirement no file
-  declares, takes what the run exercised. An entry stands on a pass that counts
-  for any file, and a requirement's files are covered together: each file a host
-  test build compiles (`cargo check --workspace --tests`) needs a pass that counts
-  for it, or the requirement's host entries fall to `stale`, or to `unverified` if
+  crates it imports are unchanged, or moved where a review or the requirement's
+  links carry the move; another local file is a part with its own evidence. A
+  pass that reached no declaring file, or a requirement no file declares, takes
+  what the run exercised. An entry stands on a pass that counts for any file,
+  and a requirement's files are covered together: each file a host test build
+  compiles (`cargo check --workspace --tests`) needs a pass that counts for
+  it, or the requirement's host entries fall to `stale`, or to `unverified` if
   no test ever reached it. A file that build does not compile, such as a task
   definition, is judged by target-level evidence alone. `check` names both kinds
   of file. The compiler is not part of evidence.
@@ -183,11 +191,12 @@ and a procedure's own section.
   in, each with its identity, and the external crate versions. A board result
   counts while every file declaring its requirement that the run compiled in is
   unchanged, and every external crate such a file imports is at the version it
-  ran with (or a reviewed bump of it). Nothing else in the image is part of it:
-  a file added beside them, the bench's own code, another run's code, the build
-  profile or a rebuilt binary leave it standing, so a UART verified on a bench
-  keeps its evidence when an LED driver joins the board. A run that compiled in
-  no declaring file stands while every file it compiled in is unchanged.
+  ran with (or a reviewed bump of it, or a move its requirement's links carry).
+  Nothing else in the image is part of it: a file added beside them, the
+  bench's own code, another run's code, the build profile or a rebuilt binary
+  leave it standing, so a UART verified on a bench keeps its evidence when an
+  LED driver joins the board. A run that compiled in no declaring file stands
+  while every file it compiled in is unchanged.
 - **Every declaring file needs covering.** A requirement's board entries stand
   only while each file declaring it is covered by a counting pass: a host test
   that exercised it, or a board run that compiled it in. A file only another
@@ -231,6 +240,39 @@ file inside the repository once links are resolved, whose time is not UTC in tha
 form, or whose `from` and `to` are the same version; and while one is refused no
 command runs. The reviews directory must be inside the repository and apart from
 the evidence directory.
+
+### Moves a library's links carry
+
+A requirement's links into a library (its `library:` entries) state what it
+needs from that library. Its own evidence, host and board alike, stands across
+a move of the library's git commit while every requirement it links in that
+library:
+
+- keeps its claim: its ID and statement, and the statements of everything
+  derived from it, are the same at the commit the evidence recorded and at the
+  commit the build uses, however the library verifies it; and
+- is `verified` at the commit the build uses, by the library's own evidence.
+
+The library's evidence follows its files, whose identity ignores comments, so a
+README, comment or doc change in the library owes nothing above it. A change to
+a file its evidence covers re-owes what that file declares there until the
+library reverifies it, and with it the evidence of every requirement above that
+links one.
+
+- Only a requirement's own links carry its evidence, and only across a move of
+  the crate they name. A requirement that links nothing in a crate it imports
+  goes stale when that crate moves, and a crate no requirement links moves
+  exactly as before.
+- A linked requirement that changed its claim, that the old commit did not
+  present, or that is `stale`, `unverified` or `failed` at the new commit
+  carries nothing. One the new commit no longer presents is a broken link,
+  which every command refuses.
+- The old commit's requirements are read from the library's git history in the
+  copy cargo checked out. A commit not found there, a registry version, or a
+  move to another commit than the one the build uses carries nothing.
+- It bridges only that crate's version, as a review does: a changed file, a
+  changed claim or another crate moving still stales the evidence. A review
+  still carries any crate's move, linked or not.
 
 ## A requirement
 
@@ -290,7 +332,9 @@ revision's own requirements and evidence give, computed there. The crate needs a
 claimed. Building it to judge it uses `target/reqtool-libraries/`. An entry like
 this covers only the library's part: a requirement's other entries still stand on
 this project's own evidence. A pin's commit is part of what evidence records, so
-moving it flags the files importing the crate until a review covers the move.
+moving it flags the files importing the crate until a review covers the move,
+except for the evidence of a requirement whose links carry it
+([Moves a library's links carry](#moves-a-librarys-links-carry)).
 
 A requirement is verified by its own entries only; a parent is never proved
 through its children. Unknown fields are refused, and there is no `status`

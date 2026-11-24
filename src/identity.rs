@@ -7,6 +7,9 @@
 //! - A claim is what one verification entry asserts: the requirement's ID and
 //!   statement, the entry's level, environment, hazard, preconditions and method, and for a
 //!   procedure the text of its section.
+//! - A promise is what a requirement asserts whatever verifies it: its ID and
+//!   statement and the statements of everything derived from it, the claim
+//!   without the entry.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -97,14 +100,14 @@ fn doc_attribute(trees: &[TokenTree]) -> Option<usize> {
     is_doc.then_some(at + 1)
 }
 
-/// What one verification entry claims. Whitespace in the statement is
-/// collapsed, so re-wrapping the YAML leaves the claim alone.
-pub fn claim(
-    repository: &Path,
-    requirement: &Requirement,
-    sets: &[&Requirement],
-    entry: &Entry,
-) -> Result<String, String> {
+/// What a requirement promises, whatever verifies it: its ID and statement,
+/// and the statements of everything derived from it. A project linking a
+/// library's requirement relies on this, and on nothing about its entries.
+pub fn promise(requirement: &Requirement, sets: &[&Requirement]) -> String {
+    sha256(promise_text(requirement, sets).as_bytes())
+}
+
+fn promise_text(requirement: &Requirement, sets: &[&Requirement]) -> String {
     let squash = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut text = String::new();
     let _ = writeln!(text, "id {}", requirement.id);
@@ -114,6 +117,19 @@ pub fn claim(
     for set in sets {
         let _ = writeln!(text, "sets {} {}", set.id, squash(&set.statement));
     }
+    text
+}
+
+/// What one verification entry claims: what the requirement promises, and the
+/// entry. Whitespace in the statement is collapsed, so re-wrapping the YAML
+/// leaves the claim alone.
+pub fn claim(
+    repository: &Path,
+    requirement: &Requirement,
+    sets: &[&Requirement],
+    entry: &Entry,
+) -> Result<String, String> {
+    let mut text = promise_text(requirement, sets);
     let method = match &entry.method {
         Method::Test(path) => format!("test {path}"),
         Method::Procedure(reference) => format!(
@@ -184,7 +200,53 @@ pub fn hex(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::source;
+    use std::collections::BTreeMap;
+
+    use super::{claim, promise, source};
+    use crate::schema::{Entry, Environment, Hazard, Level, Method, Requirement, Verification};
+
+    fn requirement(id: &str, statement: &str, entries: Vec<Entry>) -> Requirement {
+        Requirement {
+            id: id.into(),
+            title: id.into(),
+            statement: statement.into(),
+            rationale: String::new(),
+            derived_from: vec!["G1".into()],
+            verification: Verification { entries },
+        }
+    }
+
+    fn test_entry(path: &str) -> Entry {
+        Entry {
+            level: Level::Unit,
+            environment: Environment::Host,
+            hazard: Hazard::None,
+            preconditions: BTreeMap::new(),
+            part: None,
+            method: Method::Test(path.into()),
+        }
+    }
+
+    #[test]
+    fn a_claim_is_the_promise_and_the_entry() {
+        let entry = test_entry("a::tests::b");
+        let parent = requirement("A-001", "The gadget shall\n  answer.", vec![entry.clone()]);
+        let child = requirement("A-002", "The part shall add.", Vec::new());
+        // The claim every record holds, which the promise was split out of.
+        assert_eq!(
+            claim(std::path::Path::new("."), &parent, &[&child], &entry).unwrap(),
+            "184503402395f3a7bce91e2b09334c52cbb4e9d1be4cfe20dc22876dd014ace2"
+        );
+        assert_eq!(
+            promise(&parent, &[&child]),
+            "cf47ee1fdcb786d7059f384e0b40eefdabcbcd1b1bc1c7737bfb0ea1088c3bc1"
+        );
+        // How it is verified is not part of what it promises.
+        let other = requirement("A-001", "The gadget shall answer.", Vec::new());
+        assert_eq!(promise(&other, &[&child]), promise(&parent, &[&child]));
+        let changed = requirement("A-002", "The part shall subtract.", Vec::new());
+        assert_ne!(promise(&parent, &[&changed]), promise(&parent, &[&child]));
+    }
 
     #[test]
     fn layout_and_comments_do_not_change_a_source_identity() {

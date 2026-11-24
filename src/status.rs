@@ -72,6 +72,19 @@ pub trait Evidence {
     fn reviews(&self, _requirement: &Requirement, _entry: usize) -> Vec<String> {
         Vec::new()
     }
+
+    /// The moves of a linked library an entry's status stands across on its
+    /// requirement's links, where it is not the status the same evidence
+    /// gives without them.
+    fn links(&self, _requirement: &Requirement, _entry: usize) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// For an entry that is not verified: the moves of a library the project
+    /// links that its evidence did not stand across, each with why.
+    fn not_carried(&self, _requirement: &Requirement, _entry: usize) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 pub struct NoEvidence;
