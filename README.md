@@ -156,6 +156,11 @@ A fail clears only when the code changes and a run passes, or when a record
 `--supersedes` it with the user's `--ruling`. Board evidence is reported per
 board; an entry takes the worst board with evidence.
 
+A requirement takes its worst entry. Entries of one requirement that name the
+same `part` count as one entry: the part is proven once, on any one of its
+carriers, so they give the best status among them, or `failed` if any of them
+failed. Without a `part`, every entry has to stand on its own.
+
 Every result carries its claim: the requirement's ID and statement
 (whitespace-insensitive), the statements of everything derived from it, the entry,
 and a procedure's own section.
@@ -252,6 +257,22 @@ requirements:
             propellers: removed
           method:
             procedure: procedures.md#Heading
+```
+
+Two procedures that prove the same part on different boards name it, and the
+requirement stands on either:
+
+```yaml
+        - level: target
+          environment: development
+          part: uart              # optional; two entries or more, procedures on hardware
+          method:
+            procedure: benches.md#UART on board A
+        - level: target
+          environment: development
+          part: uart
+          method:
+            procedure: benches.md#UART on board B
 ```
 
 A third method inherits a library's evidence:

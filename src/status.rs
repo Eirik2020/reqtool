@@ -83,8 +83,10 @@ impl Evidence for NoEvidence {
 }
 
 /// Requirement statuses from entry statuses: the worst of a requirement's own
-/// entries, and `unverified` without any. A parent is never proved through
-/// its children, nor a child through its parent's run.
+/// entries, and `unverified` without any. Entries naming the same part count
+/// as one: the part is proven once, on any one of its carriers, so they give
+/// their best status, or `failed` if any of them failed. A parent is never
+/// proved through its children, nor a child through its parent's run.
 pub fn compute(
     requirements: &BTreeMap<String, Requirement>,
     evidence: &dyn Evidence,
@@ -92,13 +94,33 @@ pub fn compute(
     requirements
         .values()
         .map(|requirement| {
-            let status = (0..requirement.verification.entries.len())
-                .map(|entry| evidence.entry(requirement, entry))
+            let mut alone = Vec::new();
+            let mut parts: BTreeMap<&str, Vec<Status>> = BTreeMap::new();
+            for (index, entry) in requirement.verification.entries.iter().enumerate() {
+                let status = evidence.entry(requirement, index);
+                match &entry.part {
+                    Some(part) => parts.entry(part).or_default().push(status),
+                    None => alone.push(status),
+                }
+            }
+            let status = alone
+                .into_iter()
+                .chain(parts.into_values().map(carrier_status))
                 .max()
                 .unwrap_or(Status::Unverified);
             (requirement.id.clone(), status)
         })
         .collect()
+}
+
+/// One part's status from its carriers': the best of them, since any one
+/// carrier proves the part. A fail on any carrier still stands: only changed
+/// code and a pass, or a ruling, clear one.
+fn carrier_status(carriers: Vec<Status>) -> Status {
+    if carriers.contains(&Status::Failed) {
+        return Status::Failed;
+    }
+    carriers.into_iter().min().unwrap_or(Status::Unverified)
 }
 
 #[cfg(test)]
@@ -120,6 +142,7 @@ mod tests {
                         environment: Environment::Host,
                         hazard: Hazard::None,
                         preconditions: std::collections::BTreeMap::new(),
+                        part: None,
                         method: Method::Test("t".into()),
                     })
                     .collect(),
@@ -172,6 +195,50 @@ mod tests {
         assert_eq!(compute(&requirements, &fixed)["A-001"], Status::Stale);
         let fixed = evidence(&[("A-001", 0, Status::Verified), ("A-001", 1, Status::Failed)]);
         assert_eq!(compute(&requirements, &fixed)["A-001"], Status::Failed);
+    }
+
+    #[test]
+    fn carriers_of_one_part_stand_on_any_one_of_them() {
+        let mut both = requirement("A-001", &["R2"], 3);
+        both.verification.entries[1].part = Some("uart".into());
+        both.verification.entries[2].part = Some("uart".into());
+        let requirements = graph(vec![both]);
+        let fixed = evidence(&[
+            ("A-001", 0, Status::Verified),
+            ("A-001", 1, Status::Verified),
+            ("A-001", 2, Status::Stale),
+        ]);
+        assert_eq!(compute(&requirements, &fixed)["A-001"], Status::Verified);
+        let fixed = evidence(&[
+            ("A-001", 0, Status::Verified),
+            ("A-001", 1, Status::Stale),
+            ("A-001", 2, Status::Unverified),
+        ]);
+        assert_eq!(compute(&requirements, &fixed)["A-001"], Status::Stale);
+        // The entry outside the part still has to stand on its own.
+        let fixed = evidence(&[
+            ("A-001", 0, Status::Stale),
+            ("A-001", 1, Status::Verified),
+            ("A-001", 2, Status::Verified),
+        ]);
+        assert_eq!(compute(&requirements, &fixed)["A-001"], Status::Stale);
+        // A fail on one carrier is not hidden by a pass on another.
+        let fixed = evidence(&[
+            ("A-001", 0, Status::Verified),
+            ("A-001", 1, Status::Verified),
+            ("A-001", 2, Status::Failed),
+        ]);
+        assert_eq!(compute(&requirements, &fixed)["A-001"], Status::Failed);
+    }
+
+    #[test]
+    fn different_parts_each_need_a_carrier() {
+        let mut two = requirement("A-001", &["R2"], 2);
+        two.verification.entries[0].part = Some("v2".into());
+        two.verification.entries[1].part = Some("v4".into());
+        let requirements = graph(vec![two]);
+        let fixed = evidence(&[("A-001", 0, Status::Verified), ("A-001", 1, Status::Stale)]);
+        assert_eq!(compute(&requirements, &fixed)["A-001"], Status::Stale);
     }
 
     #[test]

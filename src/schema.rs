@@ -55,6 +55,10 @@ pub struct Entry {
     /// state each one.
     #[serde(default)]
     pub preconditions: BTreeMap<String, String>,
+    /// The part this entry is one carrier of. A requirement's entries naming
+    /// the same part are alternatives: it stands on any one of them.
+    #[serde(default)]
+    pub part: Option<String>,
     pub method: Method,
 }
 

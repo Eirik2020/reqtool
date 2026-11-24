@@ -287,6 +287,31 @@ impl Project {
                     problem(format!("entry {}: {message}", index + 1));
                 }
             }
+            // A part is proven on hardware, by any one of several carriers.
+            let mut carriers: BTreeMap<&str, usize> = BTreeMap::new();
+            for (index, entry) in requirement.verification.entries.iter().enumerate() {
+                let Some(part) = entry.part.as_deref() else {
+                    continue;
+                };
+                if part.trim().is_empty() {
+                    problem(format!("entry {}: part is empty", index + 1));
+                } else if !entry.level.on_target() || !matches!(entry.method, Method::Procedure(_))
+                {
+                    problem(format!(
+                        "entry {}: part {part} is named by an entry that is not a procedure on hardware",
+                        index + 1
+                    ));
+                } else {
+                    *carriers.entry(part).or_default() += 1;
+                }
+            }
+            for (part, count) in carriers {
+                if count == 1 {
+                    problem(format!(
+                        "part {part} has one carrier; a part is named by two entries or more"
+                    ));
+                }
+            }
         }
         for (path, file) in &self.trace.files {
             let mut seen = BTreeSet::new();
